@@ -7,7 +7,6 @@ function loggy {
   fi
 }
 
-loggy 1
 # function defs
 # do this in the main code body because it doesn't work inside a called function - the function wrapper makes it always false
 if [ -t 1 ] ; then
@@ -15,7 +14,7 @@ if [ -t 1 ] ; then
 else
   TERM=false
 fi
-
+loggy 1
 # pass in a state, a message, and optionally the expected "good" value.
 #  If the condition matches the expected state, or is 0 by default as that is the 'success'
 #   return code, the message will be green.
