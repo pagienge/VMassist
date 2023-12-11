@@ -24,6 +24,7 @@ loggy 1
 # 1 = state value to check
 # 2 = string to ouput in color
 # 3 = optional 'success' value to substutue for 0 (default when not specified)
+loggy 99
 function printColorCondition {
   RED='\033[0;31m'
   GREEN='\033[0;32m'
