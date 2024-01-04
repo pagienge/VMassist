@@ -1,20 +1,46 @@
 #!/usr/bin/env bash
 source /etc/os-release
 DEBUG=0
-function loggy {
-  if [ $DEBUG -gt 0 ]; then
-    echo "log-$1"
-  fi
-}
+LOGDIR="/var/log/azure"
+LOGFILE="$LOGDIR/waagenthealth.log"
 
 # function defs
-# do this in the main code body because it doesn't work inside a called function - the function wrapper makes it always false
-if [ -t 1 ] ; then
-  TERM=true
-else
-  TERM=false
-fi
-loggy 1
+
+help()
+{
+   # Display help block
+   echo "Azure Agent health check script"
+   echo
+   echo "Syntax: $0 [-h|v]"
+   echo "options:"
+   echo "h     Print this Help."
+   echo "v     Verbose mode."
+   echo
+}
+
+function loggy {
+  if [ $DEBUG -gt 0 ]; then
+    echo "$1"
+  fi
+  echo "$(date +%FT%T%z)  $1" >> $LOGFILE
+}
+# END function defs
+
+# process command-line switches
+while getopts ":hv" option; do
+   case $option in
+      h) # display Help
+        help
+        exit;;
+      v) # turn on verbose mode
+        DEBUG=1
+        ;;
+      \?) # Invalid option
+        echo "Error: Invalid option"
+        exit;;
+   esac
+done
+
 # pass in a state, a message, and optionally the expected "good" value.
 #  If the condition matches the expected state, or is 0 by default as that is the 'success'
 #   return code, the message will be green.
@@ -24,7 +50,6 @@ loggy 1
 # 1 = state value to check
 # 2 = string to ouput in color
 # 3 = optional 'success' value to substutue for 0 (default when not specified)
-loggy 99
 function printColorCondition {
   RED='\033[0;31m'
   GREEN='\033[0;32m'
@@ -49,8 +74,26 @@ function printColorCondition {
   fi
 }
 
-loggy 2
-# var defaults
+# create the log file/directory once
+if [ ! -d $LOGDIR ]; then
+  mkdir -p $LOGDIR
+  logger "$0 created $LOGDIR for logging"
+  loggy "Creating $LOGDIR - this could indicate larger problems"
+
+fi
+
+loggy "$0 started by $USER at $(date)"
+
+# do this in the main code body because it doesn't work inside a called function - the function wrapper makes it always false
+if [ -t 1 ] ; then
+  TERM=true
+else
+  TERM=false
+fi
+
+
+
+# processing variable defaults - different than the script util defaults at the start of the script
 DISTRO="hm-linux"
 PY="/usr/bin/python3"
 SERVICE="waagent.service"
@@ -60,22 +103,25 @@ UNITFILE="/usr/bin/false"
 UNITSTAT="undef"
 UNITSTATRC=0
 
-# The base executable for waagent is always this, the difference is in how it's called and what python is called inside
+# The base executable for the agent is always waagent, the difference is in how it's called and what python is called inside the exe
+loggy "Checking for agent executable"
 EXE=$(which waagent)
 if [ -z ${EXE} ] ; then
-  # no agent found, maybe change a variable for later
+  # no agent found, maybe change a variable for later, but EXE being 'null' should be good enough
   false
+  loggy "No waagent found inside of \$PATH"
 else
+  loggy "Found waagent at $EXE"
   PY=$(head -n1 $EXE | cut -c 3-)
 fi
-loggy 3
+
 # distro specification
 # Set this from sourcing os-release.  We'll have to be able to distill down all the different 'flavors' and how
 #  they refer to themselves, into classes we will evaluate later
 case "$ID_LIKE" in
   fedora)
     DISTRO="redhat"
-if (( $(echo "$VERSION_ID < 8" | bc -l) )); then
+    if (( $(echo "$VERSION_ID < 8" | bc -l) )); then
       DNF="yum"
     fi
     ;;
@@ -95,7 +141,8 @@ if (( $(echo "$VERSION_ID < 8" | bc -l) )); then
       DISTRO=$ID_LIKE
     fi
   ;;
-  esac
+esac
+loggy "Distribution family found to be $DISTRO"
 
 # # Set some distro-specific modifiers
 # if [[ $DISTRO == "redhat" ]]; then
@@ -109,18 +156,17 @@ if (( $(echo "$VERSION_ID < 8" | bc -l) )); then
 #   SERVICE="walinuxagent.service"
 #   PKG="dpkg"
 # fi
-loggy 4
+
 # We could either have one big if-fi structure checking distros and all the checks below in the per-distro blocks, or have these repeated if-fi blocks for each type of check.
 #  pick your poison
 
 # find the systemd unit for the Azure agent, what package owns it, and what repository it came from
 #  this is to catch any strange installations, and possibly the repo will call out an appliance/custom image
 UNITFILE=$(systemctl show $SERVICE -p FragmentPath | cut -d= -f2)
-loggy 5
+loggy "Agent systemd unit located at $UNITFILE"
 if [[ $UNITFILE ]]; then
   if [[ $DISTRO == "ubuntu" ]]; then
     OWNER=$($PKG -S $UNITFILE 2> /dev/null | cut -d: -f1)
-    loggy "here5.5"
     # throw away the warning about apt not being a stable interface
     REPO=$(apt list --installed 2> /dev/null| grep $OWNER)
   elif [[ $DISTRO == "suse" ]]; then
@@ -134,7 +180,7 @@ if [[ $UNITFILE ]]; then
     OWNER=$($PKG -q --whatprovides $UNITFILE | cut -d: -f1)
     REPO=$($DNF info  $OWNER 2>/dev/null | grep -i "From repo" | tr -d '[:blank:]'| cut -d: -f2)
   fi
-  loggy 6
+  loggy "Agent owned by $OWNER and installed from $REPO"
   # Check service/unit status
   #  I think this was for trimming a newline, but no newline on RH7, maybe this was copypasta?
   #  UNITSTAT=$(systemctl is-active $SERVICE | tr -d [:space:]
@@ -142,18 +188,19 @@ if [[ $UNITFILE ]]; then
 
   UNITSTAT=$(systemctl is-active $SERVICE)
   UNITSTATRC=$?
-  loggy 7
+  loggy "Unit activity test: $UNITSTAT :: RC:$UNITSTATRC"
+  
   # Check python and it's origin
   # this would work if there is an agent process running
   #   dnf info $(rpm -q --whatprovides $(realpath /proc/$(systemctl show --property MainPID --value waagent)/exe))
-  # but we have to deal with the fact that the service might be dying / not running
+  # but we have to deal with the fact that the service might be dying / not running - or a non-DNF Linux
   PYPATH=$(systemctl show $SERVICE -q -p ExecStart | tr " " "\n" | grep python | cut -d "=" -f 2 | uniq)
   # check if we got a python path, which may be false if the service only calls waagent instead of calling it as an arg to python
   #  This is most common on RH but may happen elsewhere
-  loggy 8
   if [[ -z $PYPATH ]]; then
+    loggy "python unable to be located from unit definition, probably called from within the exe"
     WAPATH=$(systemctl show $SERVICE -q -p ExecStart | tr " " "\n" | grep waagent | cut -d "=" -f 2 | uniq)
-    loggy 9
+    
     if [ -z ${WAPATH} ] ; then
       # no agent found, maybe change a variable for later
       false
@@ -162,16 +209,18 @@ if [[ $UNITFILE ]]; then
       # the first line of the waagent "binary" will be the path to whatever python it uses
       PYPATH=$(head -n1 $WAPATH | cut -d "!" -f 2)
     fi
+    loggy "Python called from reading waagent script :: $PYPATH"
   fi
 else
   OWNER="systemd"
   REPO="undef"
+  loggy "Python called explicitly from the systemd unit :: $PYPATH"
   # move more of the vars above into this 'bad variables' stanza
 fi
 
 # now that we should definitively have a python path, find out who owns it.  If this is still empty, just fail, since waagen't
 # didn't eval out, maybe waagent doesn't even exist??
-loggy 10
+loggy "Checking who provides $PYPATH"
 if [[ $PYPATH ]]; then
   if [[ $DISTRO == "ubuntu" ]]; then
     PYOWNER=$($PKG -S $PYPATH | cut -d: -f1)
@@ -190,10 +239,16 @@ else
   PYOWNER="undef - is waagent here?"
   PYREPO="n/a"
 fi
+loggy "Python owning package : $PYOWNER"
+loggy "Package from repository:$PYREPO"
 
-# block to use 'system python' to query the IMDS - move this to the end of the script later.
-# we are using the system's python to test regardless
-IMDSHTTPRC=`/usr/bin/env $PY - <<EOF
+# These tests only work 'as root' so lets check if root and
+
+if [[ $EUID == 0 ]]; then
+  loggy "Checking IMDS access"
+  # block to use 'system python' to query the IMDS - move this to the end of the script later.
+  # we are using the system's python to test regardless
+  IMDSHTTPRC=`/usr/bin/env $PY - <<EOF
 
 import json
 
@@ -235,7 +290,8 @@ main()
 
 EOF`
 
-WIREHTTPRC=`/usr/bin/env $PY - <<EOF
+  loggy "Checking wireserver access"
+  WIREHTTPRC=`/usr/bin/env $PY - <<EOF
 
 import requests
 
@@ -259,9 +315,15 @@ except requests.exceptions.RequestException as err:
   print ("UnexpectedErr")
 EOF`
 
+else
+  loggy "Skipping wireserver and IMDS checks due to not running as root"
+  WIREHTTPRC="Not run as root"
+  IMDSHTTPRC="Not run as root"
+fi
 
 # Check some agent config items
 #  Get only the first char of the "Extensions.Enabled" value, and lowercase it, since it could be y/Y/yes/Yes
+loggy "Checking agent auto-upgrade status"
 EXTENS=$(grep -i Extensions.Enabled /etc/waagent.conf | tr '[:upper:]' '[:lower:]'| cut -d = -f 2 | cut -c1-1 )
 EXTENSMSG="enabled" # default
 if [ -z $EXTENS ]; then
@@ -273,8 +335,24 @@ else
   fi
 fi
 
+# make a log-friendly report, possibly for easy parsing
+LOGSTRING=""
+LOGSTRING="$LOGSTRING::DISTRO:$DISTRO"
+LOGSTRING="$LOGSTRING::SERVICE:$SERVICE"
+LOGSTRING="$LOGSTRING::SRVSTAT:$UNITSTAT"
+LOGSTRING="$LOGSTRING::SRVRC:$UNITSTATRC"
+LOGSTRING="$LOGSTRING::UNIT:$UNITSTAT"
+LOGSTRING="$LOGSTRING::UNITPKG:$OWNER"
+LOGSTRING="$LOGSTRING::REPO:$REPO"
+LOGSTRING="$LOGSTRING::PY:$PYPATH"
+LOGSTRING="$LOGSTRING::PYPKG:$PYOWNER"
+LOGSTRING="$LOGSTRING::PYREPO:$PYREPO"
+LOGSTRING="$LOGSTRING::WIRE:$WIREHTTPRC"
+LOGSTRING="$LOGSTRING::IMDS:$IMDSHTTPRC"
+LOGSTRING="$LOGSTRING::EXTN:$EXTENS"
+loggy $LOGSTRING
 
-# output our report
+# output our report to the 'console'
 echo -e "Distro Family:  $DISTRO"
 echo -e "Agent Service:  $SERVICE"
 echo -e "Agent status:   $(printColorCondition $UNITSTATRC $UNITSTAT)"
@@ -288,21 +366,4 @@ echo -e "IMDS HTTP CODE: $(printColorCondition $IMDSHTTPRC $IMDSHTTPRC 200)"
 echo -e "WIRE HTTP CODE: $(printColorCondition $WIREHTTPRC $WIREHTTPRC 200)"
 echo -e "Extensions:     $(printColorCondition $EXTENS $EXTENSMSG y)"
 
-
-## Example code for printing in color and testing for outputting to the terminal
-# RED='\033[0;31m'
-# GREEN='\033[0;32m'
-# NC='\033[0m' # No Color
-
-
-# if [ -t 1 ] ; then
-#     echo -e $GREEN stdout is a terminal $NC
-# else
-#     echo -e $RED stdout is not a terminal $NC
-# fi
-# echo " || "
-# if [ -t 0 ] ; then
-#     echo -e $GREEN stdin is a terminal $NC
-# else
-#     echo -e $RED stdin is not a terminal $NC
-# fi
+loggy "$0 finished at $(date)"
