@@ -103,19 +103,7 @@ UNITFILE="/usr/bin/false"
 UNITSTAT="undef"
 UNITSTATRC=0
 
-# The base executable for the agent is always waagent, the difference is in how it's called and what python is called inside the exe
-loggy "Checking for agent executable"
-EXE=$(which waagent)
-if [ -z ${EXE} ] ; then
-  # no agent found, maybe change a variable for later, but EXE being 'null' should be good enough
-  false
-  loggy "No waagent found inside of \$PATH"
-else
-  loggy "Found waagent at $EXE"
-  PY=$(head -n1 $EXE | cut -c 3-)
-fi
-
-# distro specification
+# distro determination
 # Set this from sourcing os-release.  We'll have to be able to distill down all the different 'flavors' and how
 #  they refer to themselves, into classes we will evaluate later
 case "$ID_LIKE" in
@@ -125,12 +113,12 @@ case "$ID_LIKE" in
       DNF="yum"
     fi
     ;;
-        debian)
+  debian)
     DISTRO="ubuntu"
     SERVICE="walinuxagent.service"
     PKG="dpkg"
     ;;
-        suse)
+  suse)
     DISTRO="suse"
     ;;
   *)
@@ -144,24 +132,25 @@ case "$ID_LIKE" in
 esac
 loggy "Distribution family found to be $DISTRO"
 
-# # Set some distro-specific modifiers
-# if [[ $DISTRO == "redhat" ]]; then
-#   if (( $(echo "$VERSION_ID < 8" | bc -l) )); then
-#     DNF="yum"
-#   fi
-#   true;
-# elif [[ $DISTRO == "suse" ]]; then
-#   true;
-# elif [[ $DISTRO == "ubuntu" ]]; then
-#   SERVICE="walinuxagent.service"
-#   PKG="dpkg"
-# fi
 
-# We could either have one big if-fi structure checking distros and all the checks below in the per-distro blocks, or have these repeated if-fi blocks for each type of check.
-#  pick your poison
+# The base executable for the agent is always waagent, the difference is in how it's called and what python is being
+#  called inside the exe... and maybe where it is located
+loggy "Checking for agent executable"
+EXE=$(which waagent)
+if [ -z ${EXE} ] ; then
+  # no agent found, maybe change a variable for later, but EXE being 'null' should be good enough
+  false
+  loggy "No waagent found inside of \$PATH"
+else
+  loggy "Found waagent at $EXE"
+  PY=$(head -n1 $EXE | cut -c 3-)
+fi
 
-# find the systemd unit for the Azure agent, what package owns it, and what repository it came from
-#  this is to catch any strange installations, and possibly the repo will call out an appliance/custom image
+# We could either have one big if-fi structure checking distros and all the checks below in the per-distro blocks, or have these 
+#  repeated if-fi blocks for each type of check. Pick your poison
+
+# find the systemd unit for the Azure agent, what package owns it, and what repository that package came from
+#  this is to catch any strange installations, and possibly the repo will indicate an appliance/custom image
 UNITFILE=$(systemctl show $SERVICE -p FragmentPath | cut -d= -f2)
 loggy "Agent systemd unit located at $UNITFILE"
 if [[ $UNITFILE ]]; then
@@ -172,8 +161,8 @@ if [[ $UNITFILE ]]; then
   elif [[ $DISTRO == "suse" ]]; then
     OWNER=$($PKG -q --whatprovides $UNITFILE 2> /dev/null | cut -d: -f1)
     REPO=$(zypper --quiet -s 11 se -i -t package -s $OWNER | grep "^i" | awk '{print $6}')
-#  elif [[ $DISTRO == "mariner" ]]; then
-#    OWNER=$($PKG -q --whatprovides $UNITFILE | cut -d: -f1)
+  elif [[ $DISTRO == "mariner" ]]; then
+    OWNER=$($PKG -q --whatprovides $UNITFILE | cut -d: -f1)
   else
     # works for RHEL, suse WIP
     # Mariner does something different for the 'from repo' part
@@ -218,6 +207,12 @@ else
   # move more of the vars above into this 'bad variables' stanza
 fi
 
+# quick check and log the version of python
+loggy "Checking $PY version"
+PYVERSION=$($PY --version)
+loggy "Python=$PYVERSION"
+
+
 # now that we should definitively have a python path, find out who owns it.  If this is still empty, just fail, since waagen't
 # didn't eval out, maybe waagent doesn't even exist??
 loggy "Checking who provides $PYPATH"
@@ -250,44 +245,28 @@ if [[ $EUID == 0 ]]; then
   # we are using the system's python to test regardless
   IMDSHTTPRC=`/usr/bin/env $PY - <<EOF
 
-import json
-
 import requests
-
-# python functions
-def api_call(endpoint):
-  headers = {'Metadata': 'True'}
-
-#  response=requests.get(endpoint, headers=headers, proxies=proxies, timeout=5)
-  response=requests.get(endpoint, headers=headers, timeout=5)
-  return response
-  json_obj = response.json()
-  return json_obj
-
-def main():
-    # Instance provider API call
-    imdsresp = api_call(instance_endpoint)
-    print(imdsresp.status_code)
 
 imds_server_base_url = "http://169.254.169.254"
 instance_api_version = "2021-02-01"
 instance_endpoint = imds_server_base_url + \
     "/metadata/instance?api-version=" + instance_api_version
+headers = {'Metadata': 'True'}
 
-attested_api_version = "2021-02-01"
-attested_nonce = "1234576"
-attested_endpoint = imds_server_base_url + "/metadata/attested/document?api-version=" + \
-    attested_api_version + "&nonce=" + attested_nonce
-
-# Proxies must be bypassed when calling Azure IMDS
-# commenting this out from example code because we want to know if a proxy exists in this script
-#proxies = {
-#    "http": None,
-#    "https": None
-#}
-
-main()
-
+try:
+  r = requests.get(instance_endpoint, headers=headers, timeout=5)
+  print(r.status_code)
+  r.raise_for_status()
+except requests.exceptions.HTTPError as errh:
+  print ("Error")
+except requests.exceptions.RetryError as errr:
+  print ("MaxRetries")
+except requests.exceptions.Timeout as errt:
+  print ("Timeout")
+except requests.exceptions.ConnectionError as errc:
+  print ("ConnectErr")
+except requests.exceptions.RequestException as err:
+  print ("UnexpectedErr")
 EOF`
 
   loggy "Checking wireserver access"
@@ -295,12 +274,12 @@ EOF`
 
 import requests
 
-imds_server_base_url = "http://168.63.129.16"
-instance_endpoint = imds_server_base_url + "/?comp=versions"
+wire_server_base_url = "http://168.63.129.16"
+wire_endpoint = wire_server_base_url + "/?comp=versions"
 headers = {'Metadata': 'True'}
 
 try:
-  r = requests.get(instance_endpoint, headers=headers, timeout=5)
+  r = requests.get(wire_endpoint, headers=headers, timeout=5)
   print(r.status_code)
   r.raise_for_status()
 except requests.exceptions.HTTPError as errh:
@@ -345,6 +324,7 @@ LOGSTRING="$LOGSTRING::UNIT:$UNITSTAT"
 LOGSTRING="$LOGSTRING::UNITPKG:$OWNER"
 LOGSTRING="$LOGSTRING::REPO:$REPO"
 LOGSTRING="$LOGSTRING::PY:$PYPATH"
+LOGSTRING="$LOGSTRING::PYVERS:$PYVERSION"
 LOGSTRING="$LOGSTRING::PYPKG:$PYOWNER"
 LOGSTRING="$LOGSTRING::PYREPO:$PYREPO"
 LOGSTRING="$LOGSTRING::WIRE:$WIREHTTPRC"
@@ -360,6 +340,7 @@ echo -e "Unit file:      $UNITFILE"
 echo -e "Unit package:   $OWNER"
 echo -e "Repo for Unit:  $REPO"
 echo -e "python path:    $PYPATH"
+echo -e "python version: $PYVERSION"
 echo -e "python package: $PYOWNER"
 echo -e "python repo:    $PYREPO"
 echo -e "IMDS HTTP CODE: $(printColorCondition $IMDSHTTPRC $IMDSHTTPRC 200)"
