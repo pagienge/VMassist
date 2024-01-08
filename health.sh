@@ -301,17 +301,36 @@ else
 fi
 
 # Check some agent config items
-#  Get only the first char of the "Extensions.Enabled" value, and lowercase it, since it could be y/Y/yes/Yes
-loggy "Checking agent auto-upgrade status"
-EXTENS=$(grep -i Extensions.Enabled /etc/waagent.conf | tr '[:upper:]' '[:lower:]'| cut -d = -f 2 | cut -c1-1 )
-EXTENSMSG="enabled" # default
-if [ -z $EXTENS ]; then
-  EXTENS="undef"
-  EXTENSMSG="undef"
+loggy "Checking agent configuration parameters by running 'waagent --show-configuration'"
+if [ -z ${EXE} ] ; then
+  # no agent found, maybe change a variable for later, but EXE being 'null' should be good enough
+  loggy "skipping config checks, no waagent found"
 else
-  if [ $EXTENS == "n" ]; then
+  # -- there is probably a way to reuse this code and pass in the value we want to check, but not doing that right now
+  loggy "Checking extension enablement"
+  #  Get only the first char of the "Extensions.Enabled" value, and lowercase it, since it could be y/Y/yes/Yes
+  EXTENS=$($EXE --show-configuration | grep -i Extensions.Enabled | tr '[:upper:]' '[:lower:]'| cut -d = -f 2 | cut -c1-1 )
+  EXTENSMSG="enabled" # default
+  if [ -z $EXTENS ]; then
+    # this shouldn't happen unless waagent wasn't located correctly
+    EXTENS="undef"
+    EXTENSMSG="undef"
+  else
+    loggy "Extensions.Enabled config : $EXTENS"
     EXTENSMSG="$EXTENS (actual value)";
   fi
+  loggy "Checking AutoUpdate"
+  AUTOUP=$($EXE --show-configuration | grep -i AutoUpdate.Enabled | tr '[:upper:]' '[:lower:]'| cut -d = -f 2 | cut -c1-1 )
+  AUTOUPMSG="enabled" # default
+  if [ -z $AUTOUP ]; then
+    # this shouldn't happen unless waagent wasn't located correctly
+    AUTOUP="undef"
+    AUTOUPMSG="undef"
+  else
+    loggy "AutoUpdate.Enabled config : $AUTOUP"
+    AUTOUPMSG="$AUTOUP (actual value)";
+  fi
+
 fi
 
 # make a log-friendly report, possibly for easy parsing
@@ -330,6 +349,7 @@ LOGSTRING="$LOGSTRING::PYREPO:$PYREPO"
 LOGSTRING="$LOGSTRING::WIRE:$WIREHTTPRC"
 LOGSTRING="$LOGSTRING::IMDS:$IMDSHTTPRC"
 LOGSTRING="$LOGSTRING::EXTN:$EXTENS"
+LOGSTRING="$LOGSTRING::AUTOUP:$AUTOUP"
 loggy $LOGSTRING
 
 # output our report to the 'console'
@@ -345,6 +365,8 @@ echo -e "python package: $PYOWNER"
 echo -e "python repo:    $PYREPO"
 echo -e "IMDS HTTP CODE: $(printColorCondition $IMDSHTTPRC $IMDSHTTPRC 200)"
 echo -e "WIRE HTTP CODE: $(printColorCondition $WIREHTTPRC $WIREHTTPRC 200)"
+# these could either be 'yes|no' or 'true|false'... using the most common defaults for the 'good' string value
 echo -e "Extensions:     $(printColorCondition $EXTENS $EXTENSMSG y)"
+echo -e "AutoUpgrade:    $(printColorCondition $AUTOUP $AUTOUPMSG t)"
 
 loggy "$0 finished at $(date)"
