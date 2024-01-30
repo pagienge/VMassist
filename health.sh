@@ -114,7 +114,7 @@ case "$ID_LIKE" in
     fi
     ;;
   debian)
-    DISTRO="ubuntu"
+    DISTRO="debian"
     SERVICE="walinuxagent.service"
     PKG="dpkg"
     ;;
@@ -123,7 +123,7 @@ case "$ID_LIKE" in
     ;;
   *)
     # The distro doesn't fall into one of the main families above, so just get us the actual value
-    if [[ -n $ID_LIKE ]]; then
+    if [[ -z $ID_LIKE ]]; then
       DISTRO=$ID
     else
       DISTRO=$ID_LIKE
@@ -139,8 +139,7 @@ loggy "Checking for agent executable"
 EXE=$(which waagent)
 if [ -z ${EXE} ] ; then
   # no agent found, maybe change a variable for later, but EXE being 'null' should be good enough
-  false
-  loggy "No waagent found inside of \$PATH"
+  loggy "No waagent found inside of \$PATH - further tests may be invalid"
 else
   loggy "Found waagent at $EXE"
   PY=$(head -n1 $EXE | cut -c 3-)
@@ -154,7 +153,7 @@ fi
 UNITFILE=$(systemctl show $SERVICE -p FragmentPath | cut -d= -f2)
 loggy "Agent systemd unit located at $UNITFILE"
 if [[ $UNITFILE ]]; then
-  if [[ $DISTRO == "ubuntu" ]]; then
+  if [[ $DISTRO == "debian" ]]; then
     OWNER=$($PKG -S $UNITFILE 2> /dev/null | cut -d: -f1)
     # throw away the warning about apt not being a stable interface
     REPO=$(apt list --installed 2> /dev/null| grep $OWNER)
@@ -191,6 +190,7 @@ if [[ $UNITFILE ]]; then
     WAPATH=$(systemctl show $SERVICE -q -p ExecStart | tr " " "\n" | grep waagent | cut -d "=" -f 2 | uniq)
     
     if [ -z ${WAPATH} ] ; then
+      # this shouldn't be a valid codepath since waagent wasn't found, and PYPATH comes from the unit
       # no agent found, maybe change a variable for later
       false
     else
@@ -217,7 +217,7 @@ loggy "Python=$PYVERSION"
 # didn't eval out, maybe waagent doesn't even exist??
 loggy "Checking who provides $PYPATH"
 if [[ $PYPATH ]]; then
-  if [[ $DISTRO == "ubuntu" ]]; then
+  if [[ $DISTRO == "debian" ]]; then
     PYOWNER=$($PKG -S $PYPATH | cut -d: -f1)
     # throw away the warning about apt not being a stable interface
     PYREPO=$(apt list --installed 2> /dev/null| grep $PYOWNER)
@@ -308,8 +308,8 @@ if [ -z ${EXE} ] ; then
 else
   # -- there is probably a way to reuse this code and pass in the value we want to check, but not doing that right now
   loggy "Checking extension enablement"
-  #  Get only the first char of the "Extensions.Enabled" value, and lowercase it, since it could be y/Y/yes/Yes
-  EXTENS=$($EXE --show-configuration | grep -i Extensions.Enabled | tr '[:upper:]' '[:lower:]'| cut -d = -f 2 | cut -c1-1 )
+  #  We're just reporting the config values
+  EXTENS=$($EXE --show-configuration 2> /dev/null | grep -i 'Extensions.Enabled' | tr '[:upper:]' '[:lower:]'| tr -d '[:space:]' | cut -d = -f 2 )
   EXTENSMSG="enabled" # default
   if [ -z $EXTENS ]; then
     # this shouldn't happen unless waagent wasn't located correctly
@@ -317,10 +317,10 @@ else
     EXTENSMSG="undef"
   else
     loggy "Extensions.Enabled config : $EXTENS"
-    EXTENSMSG="$EXTENS (actual value)";
+    EXTENSMSG="$EXTENS (actual value)"
   fi
   loggy "Checking AutoUpdate"
-  AUTOUP=$($EXE --show-configuration | grep -i AutoUpdate.Enabled | tr '[:upper:]' '[:lower:]'| cut -d = -f 2 | cut -c1-1 )
+  AUTOUP=$($EXE --show-configuration 2> /dev/null | grep -i 'AutoUpdate.Enabled' | tr '[:upper:]' '[:lower:]'| tr -d '[:space:]' | cut -d = -f 2 )
   AUTOUPMSG="enabled" # default
   if [ -z $AUTOUP ]; then
     # this shouldn't happen unless waagent wasn't located correctly
@@ -328,10 +328,18 @@ else
     AUTOUPMSG="undef"
   else
     loggy "AutoUpdate.Enabled config : $AUTOUP"
-    AUTOUPMSG="$AUTOUP (actual value)";
+    AUTOUPMSG="$AUTOUP (actual value)"
   fi
 
 fi
+
+# Network checks
+# STUFF=$(curl -s -H Metadata:true --noproxy "*" "http://169.254.169.254/metadata/instance/network/interface/0/ipv4/ipAddress/0/?api-version=2023-07-01")
+# echo $STUFF | tr { '\n' | tr , '\n' | tr } '\n' | grep "publicIpAdd" | awk  -F'"' '{print $4}'
+# What IPs do we have
+# what MAC is defined in Azure
+# curl -s -H Metadata:true --noproxy "*" "http://169.254.169.254/metadata/instance/network/interface/0/?api-version=2023-07-01" | jq
+
 
 # make a log-friendly report, possibly for easy parsing
 LOGSTRING=""
@@ -366,7 +374,7 @@ echo -e "python repo:    $PYREPO"
 echo -e "IMDS HTTP CODE: $(printColorCondition $IMDSHTTPRC $IMDSHTTPRC 200)"
 echo -e "WIRE HTTP CODE: $(printColorCondition $WIREHTTPRC $WIREHTTPRC 200)"
 # these could either be 'yes|no' or 'true|false'... using the most common defaults for the 'good' string value
-echo -e "Extensions:     $(printColorCondition $EXTENS $EXTENSMSG y)"
-echo -e "AutoUpgrade:    $(printColorCondition $AUTOUP $AUTOUPMSG t)"
+echo -e "Extensions:     "$(printColorCondition $EXTENS "$EXTENSMSG" "true")
+echo -e "AutoUpgrade:    "$(printColorCondition $AUTOUP "$AUTOUPMSG" "true")
 
 loggy "$0 finished at $(date)"
