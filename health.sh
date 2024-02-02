@@ -294,6 +294,20 @@ except requests.exceptions.RequestException as err:
   print ("UnexpectedErr")
 EOF`
 
+  # test the "other" wire server port - 
+  # nc -w 1 -z 168.63.129.16 32526
+  if [ -f /bin/nc ] ; then
+    if ( nc -w 1 -z 168.63.129.16 32526 ) ; then 
+      loggy "Wireserver:23526 connectivity check: passed"
+      WIREEXTPORT="open"
+    else 
+      loggy "Wireserver:23526 connectivity check: failed"
+      WIREEXTPORT="fail"
+    fi
+  else 
+    loggy "no netcat binary, skipping 32526 test - is this Mariner?"
+      WIREEXTPORT="no nc"
+  fi
 else
   loggy "Skipping wireserver and IMDS checks due to not running as root"
   WIREHTTPRC="Not run as root"
@@ -355,6 +369,7 @@ LOGSTRING="$LOGSTRING::PYVERS:$PYVERSION"
 LOGSTRING="$LOGSTRING::PYPKG:$PYOWNER"
 LOGSTRING="$LOGSTRING::PYREPO:$PYREPO"
 LOGSTRING="$LOGSTRING::WIRE:$WIREHTTPRC"
+LOGSTRING="$LOGSTRING::WIREEXTPORT:$WIREEXTPORT"
 LOGSTRING="$LOGSTRING::IMDS:$IMDSHTTPRC"
 LOGSTRING="$LOGSTRING::EXTN:$EXTENS"
 LOGSTRING="$LOGSTRING::AUTOUP:$AUTOUP"
@@ -373,6 +388,7 @@ echo -e "python package: $PYOWNER"
 echo -e "python repo:    $PYREPO"
 echo -e "IMDS HTTP CODE: $(printColorCondition $IMDSHTTPRC $IMDSHTTPRC 200)"
 echo -e "WIRE HTTP CODE: $(printColorCondition $WIREHTTPRC $WIREHTTPRC 200)"
+echo -e "WIRE EXTN PORT: $(printColorCondition $WIREEXTPORT $WIREEXTPORT open)"
 # these could either be 'yes|no' or 'true|false'... using the most common defaults for the 'good' string value
 echo -e "Extensions:     "$(printColorCondition $EXTENS "$EXTENSMSG" "true")
 echo -e "AutoUpgrade:    "$(printColorCondition $AUTOUP "$AUTOUPMSG" "true")
