@@ -1,30 +1,41 @@
 #!/usr/bin/env bash
+# Need 
+# - license statement
+# - disclaimers
+# - any other legalise
+# - statement of usage
+
 source /etc/os-release
 DEBUG=0
 LOGDIR="/var/log/azure"
 LOGFILE="$LOGDIR/waagenthealth.log"
+FSFULLPCENT=90
+FSFULLPCENT=10 # arbitrarily low testing value.  Release should set this to 90 or more
+STARTTIME=$(date --rfc-3339=seconds)
 
 # function defs
-
-help()
-{
-   # Display help block
-   echo "Azure Agent health check script"
-   echo
-   echo "Syntax: $0 [-h|v]"
-   echo "options:"
-   echo "h     Print this Help."
-   echo "v     Verbose mode."
-   echo
-}
-
 function loggy {
+  # simple logging handler
+  # - writes output to the defined log file
+  # - outputs to console if 'verbose' requested
   if [ $DEBUG -gt 0 ]; then
     echo "$1"
   fi
   echo "$(date +%FT%T%z)  $1" >> $LOGFILE
 }
 # END function defs
+
+help()
+{
+   # Display help block
+   echo "Azure Agent health check script"
+   echo
+   echo "Syntax: $0 [-h|-v]"
+   echo "options:"
+   echo "-h     Print this Help."
+   echo "-v     Verbose mode."
+   echo
+}
 
 # process command-line switches
 while getopts ":hv" option; do
@@ -41,16 +52,18 @@ while getopts ":hv" option; do
    esac
 done
 
-# pass in a state, a message, and optionally the expected "good" value.
+
+function printColorCondition {
+# Function to output a colored message, if the current terminal/output supports colors
+# Args: state value, a message, and optionally the expected "good" value for 'state'.
 #  If the condition matches the expected state, or is 0 by default as that is the 'success'
-#   return code, the message will be green.
-#  if false, i.e. anything other than the passed state or 0, then it will be red
+#   return code for any command, the message will be green.
+#  if false, i.e. anything other than the passed good state or 0, then it will be red
 #  could add a yellow if we find a good reason, but for now red and green will suffice
 # arguments are
 # 1 = state value to check
 # 2 = string to ouput in color
 # 3 = optional 'success' value to substutue for 0 (default when not specified)
-function printColorCondition {
   RED='\033[0;31m'
   GREEN='\033[0;32m'
   NC='\033[0m' # No Color, aka reset when we're done coloring the text
@@ -75,14 +88,17 @@ function printColorCondition {
 }
 
 # create the log file/directory once
-if [ ! -d $LOGDIR ]; then
-  mkdir -p $LOGDIR
-  logger "$0 created $LOGDIR for logging"
-  loggy "Creating $LOGDIR - this could indicate larger problems"
-
+if [ $EUID == 0 ]; then
+  if [ ! -d $LOGDIR ]; then
+    mkdir -p $LOGDIR
+    logger "$0 created $LOGDIR for logging"
+    loggy "Creating $LOGDIR - this could indicate larger problems"
+  fi
+else
+  echo "Not running as root, logging may fail and some checks will not run"
 fi
 
-loggy "$0 started by $USER at $(date)"
+loggy "$0 started by $USER at $STARTTIME"
 
 # do this in the main code body because it doesn't work inside a called function - the function wrapper makes it always false
 if [ -t 1 ] ; then
@@ -90,8 +106,6 @@ if [ -t 1 ] ; then
 else
   TERM=false
 fi
-
-
 
 # processing variable defaults - different than the script util defaults at the start of the script
 DISTRO="hm-linux"
@@ -138,21 +152,22 @@ loggy "Distribution family found to be $DISTRO"
 loggy "Checking for agent executable"
 EXE=$(which waagent)
 if [ -z ${EXE} ] ; then
-  # no agent found, maybe change a variable for later, but EXE being 'null' should be good enough
+  # no agent found, maybe change a variable for later reference, but $EXE being 'null' should be good enough
   loggy "No waagent found inside of \$PATH - further tests may be invalid"
 else
   loggy "Found waagent at $EXE"
+  # pull the top line of the waagent 'executable' out and strip off #! to find out how we call 'python'
   PY=$(head -n1 $EXE | cut -c 3-)
 fi
 
 # We could either have one big if-fi structure checking distros and all the checks below in the per-distro blocks, or have these 
-#  repeated if-fi blocks for each type of check. Pick your poison
+#  repeated if-fi blocks for the distro detection in each type of check. Pick your poison
 
 # find the systemd unit for the Azure agent, what package owns it, and what repository that package came from
 #  this is to catch any strange installations, and possibly the repo will indicate an appliance/custom image
 UNITFILE=$(systemctl show $SERVICE -p FragmentPath | cut -d= -f2)
-loggy "Agent systemd unit located at $UNITFILE"
 if [[ $UNITFILE ]]; then
+  loggy "Agent systemd unit located at $UNITFILE"
   if [[ $DISTRO == "debian" ]]; then
     OWNER=$($PKG -S $UNITFILE 2> /dev/null | cut -d: -f1)
     # throw away the warning about apt not being a stable interface
@@ -169,24 +184,19 @@ if [[ $UNITFILE ]]; then
     REPO=$($DNF info  $OWNER 2>/dev/null | grep -i "From repo" | tr -d '[:blank:]'| cut -d: -f2)
   fi
   loggy "Agent owned by $OWNER and installed from $REPO"
-  # Check service/unit status
-  #  I think this was for trimming a newline, but no newline on RH7, maybe this was copypasta?
-  #  UNITSTAT=$(systemctl is-active $SERVICE | tr -d [:space:]
-  #  will need to handle $? differently if this turns out to be needed, but ignoring it for now to grab the RV
 
+  # Check service/unit status by using the return value from systemctl
   UNITSTAT=$(systemctl is-active $SERVICE)
   UNITSTATRC=$?
   loggy "Unit activity test: $UNITSTAT :: RC:$UNITSTATRC"
   
   # Check python and it's origin
-  # this would work if there is an agent process running
-  #   dnf info $(rpm -q --whatprovides $(realpath /proc/$(systemctl show --property MainPID --value waagent)/exe))
-  # but we have to deal with the fact that the service might be dying / not running - or a non-DNF Linux
+
   PYPATH=$(systemctl show $SERVICE -q -p ExecStart | tr " " "\n" | grep python | cut -d "=" -f 2 | uniq)
-  # check if we got a python path, which may be false if the service only calls waagent instead of calling it as an arg to python
+  # check if we retrieved a python path, which may be false if the unit file only calls waagent instead of calling it as an arg to python
   #  This is most common on RH but may happen elsewhere
   if [[ -z $PYPATH ]]; then
-    loggy "python unable to be located from unit definition, probably called from within the exe"
+    loggy "python unable to be located from unit definition, probably called from within waagent"
     WAPATH=$(systemctl show $SERVICE -q -p ExecStart | tr " " "\n" | grep waagent | cut -d "=" -f 2 | uniq)
     
     if [ -z ${WAPATH} ] ; then
@@ -196,15 +206,21 @@ if [[ $UNITFILE ]]; then
     else
       # go search the waagent executable (which is a script) for the python package it will call
       # the first line of the waagent "binary" will be the path to whatever python it uses
-      PYPATH=$(head -n1 $WAPATH | cut -d "!" -f 2)
+      PYBIN=$(head -n1 $WAPATH | cut -d "!" -f 2 | tr " " "\n" | grep python)
+      loggy "Python :: $PYBIN found in $WAPATH"
+      PYPATH=$(which $PYBIN)
+      PY=$(readlink -f $PYPATH)
+      loggy "Python from reading waagent script :: $PYPATH derives to :: $PY"
     fi
-    loggy "Python called from reading waagent script :: $PYPATH"
+  else
+    # python was in the service definition for ExecStart, so use these variables
+    loggy "Python called explicitly from the systemd unit :: $PYPATH"
+    PY=$(readlink -f $PYPATH)
   fi
 else
+  # move more of the vars above into this 'bad variables' stanza to signal that things are failing
   OWNER="systemd"
   REPO="undef"
-  loggy "Python called explicitly from the systemd unit :: $PYPATH"
-  # move more of the vars above into this 'bad variables' stanza
 fi
 
 # quick check and log the version of python
@@ -212,9 +228,9 @@ loggy "Checking $PY version"
 PYVERSION=$($PY --version)
 loggy "Python=$PYVERSION"
 
-
 # now that we should definitively have a python path, find out who owns it.  If this is still empty, just fail, since waagen't
 # didn't eval out, maybe waagent doesn't even exist??
+# We will use 'PYPATH' rather than the derived PY to find out where this specific link came from
 loggy "Checking who provides $PYPATH"
 if [[ $PYPATH ]]; then
   if [[ $DISTRO == "debian" ]]; then
@@ -231,14 +247,16 @@ if [[ $PYPATH ]]; then
     PYREPO=$($DNF info  $PYOWNER 2>/dev/null | grep -i "From repo" | tr -d '[:blank:]'| cut -d: -f2)
   fi
 else
-  PYOWNER="undef - is waagent here?"
+  PYOWNER="python defintion undef - is waagent here?"
   PYREPO="n/a"
 fi
 loggy "Python owning package : $PYOWNER"
 loggy "Package from repository:$PYREPO"
 
-# These tests only work 'as root' so lets check if root and
-
+## CONNECTIVITY CHECKS
+# -- These are great candidates for moving 'into' python
+### There is possibly a better way to do this using curl - see OneNote
+# These tests only work 'as root' so lets check if root and not do any of this if not
 if [[ $EUID == 0 ]]; then
   loggy "Checking IMDS access"
   # block to use 'system python' to query the IMDS - move this to the end of the script later.
@@ -295,8 +313,19 @@ except requests.exceptions.RequestException as err:
 EOF`
 
   # test the "other" wire server port - 
+  # this doesn't respond to casual http requests, so for now do a low level nc
+  # Since socat is 'new', nc is 'old and deprecated', use them in that order, then fail if neither are here
   # nc -w 1 -z 168.63.129.16 32526
-  if [ -f /bin/nc ] ; then
+  if [ -f /bin/socat ] ; then
+    if ( /bin/socat /dev/null TCP:168.63.129.16:32526,connect-timeout=2 2>/dev/null ) ; then
+      loggy "Wireserver:23526 connectivity check: passed"
+      WIREEXTPORT="open"
+    else
+      loggy "Wireserver:23526 connectivity check: failed"
+      WIREEXTPORT="fail"
+    fi
+  elif [ -f /bin/nc ] ; then
+    loggy "No socat binary, trying nc"
     if ( nc -w 1 -z 168.63.129.16 32526 ) ; then 
       loggy "Wireserver:23526 connectivity check: passed"
       WIREEXTPORT="open"
@@ -305,8 +334,8 @@ EOF`
       WIREEXTPORT="fail"
     fi
   else 
-    loggy "no netcat binary, skipping 32526 test - is this Mariner?"
-      WIREEXTPORT="no nc"
+    loggy "no socat or nc binary, skipping 32526 test"
+    WIREEXTPORT="socat/nc not present - skipped"
   fi
 else
   loggy "Skipping wireserver and IMDS checks due to not running as root"
@@ -354,6 +383,15 @@ fi
 # what MAC is defined in Azure
 # curl -s -H Metadata:true --noproxy "*" "http://169.254.169.254/metadata/instance/network/interface/0/?api-version=2023-07-01" | jq
 
+# other general system checks
+# look for any full filesystems, as a courtesy, and because sometimes agent blows up if /var is too full
+FULLFS="none"
+
+# Cryptic command to format the output of df, then parse it, and compare to the defined $FSFULLPCENT
+DFOUT=$(df -hl --type ext4 --type xfs --type vfat --type btrfs --type ext3 --output=target,pcent | tail -n+2 | while read path pcent ; do pcent=${pcent%\%}; if [ "$pcent" -ge $FSFULLPCENT ]; then   echo "$path=>$pcent"; fi; done)
+if [[ $DFOUT ]] ; then
+  FULLFS=$DFOUT
+fi
 
 # make a log-friendly report, possibly for easy parsing
 LOGSTRING=""
@@ -364,7 +402,7 @@ LOGSTRING="$LOGSTRING::SRVRC:$UNITSTATRC"
 LOGSTRING="$LOGSTRING::UNIT:$UNITSTAT"
 LOGSTRING="$LOGSTRING::UNITPKG:$OWNER"
 LOGSTRING="$LOGSTRING::REPO:$REPO"
-LOGSTRING="$LOGSTRING::PY:$PYPATH"
+LOGSTRING="$LOGSTRING::PY:$PY"
 LOGSTRING="$LOGSTRING::PYVERS:$PYVERSION"
 LOGSTRING="$LOGSTRING::PYPKG:$PYOWNER"
 LOGSTRING="$LOGSTRING::PYREPO:$PYREPO"
@@ -373,6 +411,7 @@ LOGSTRING="$LOGSTRING::WIREEXTPORT:$WIREEXTPORT"
 LOGSTRING="$LOGSTRING::IMDS:$IMDSHTTPRC"
 LOGSTRING="$LOGSTRING::EXTN:$EXTENS"
 LOGSTRING="$LOGSTRING::AUTOUP:$AUTOUP"
+LOGSTRING="$LOGSTRING::FULLFS:$FULLFS"
 loggy $LOGSTRING
 
 # output our report to the 'console'
@@ -382,15 +421,57 @@ echo -e "Agent status:   $(printColorCondition $UNITSTATRC $UNITSTAT)"
 echo -e "Unit file:      $UNITFILE"
 echo -e "Unit package:   $OWNER"
 echo -e "Repo for Unit:  $REPO"
-echo -e "python path:    $PYPATH"
+echo -e "python path:    $PY"
 echo -e "python version: $PYVERSION"
 echo -e "python package: $PYOWNER"
 echo -e "python repo:    $PYREPO"
 echo -e "IMDS HTTP CODE: $(printColorCondition $IMDSHTTPRC $IMDSHTTPRC 200)"
 echo -e "WIRE HTTP CODE: $(printColorCondition $WIREHTTPRC $WIREHTTPRC 200)"
-echo -e "WIRE EXTN PORT: $(printColorCondition $WIREEXTPORT $WIREEXTPORT open)"
+echo -e "WIRE EXTN PORT: "$(printColorCondition "$WIREEXTPORT" "$WIREEXTPORT" "open")
 # these could either be 'yes|no' or 'true|false'... using the most common defaults for the 'good' string value
 echo -e "Extensions:     "$(printColorCondition $EXTENS "$EXTENSMSG" "true")
 echo -e "AutoUpgrade:    "$(printColorCondition $AUTOUP "$AUTOUPMSG" "true")
+# System checks
+echo -e "Volumes >$FSFULLPCENT%:   "$(printColorCondition "$FULLFS" "$FULLFS" "none")
 
-loggy "$0 finished at $(date)"
+
+AI_INSTRUMENTATION_KEY="8491943e-98da-4d75-b5b1-de88a6203eb5"
+AI_ENDPOINT="https://dc.services.visualstudio.com/v2/track"
+
+jsonPayloadEvent=$(cat <<EOF
+{
+  "iKey": "${AI_INSTRUMENTATION_KEY}",
+  "name": "${0}",
+  "time": "${STARTTIME}",
+  "data": {
+    "baseType": "EventData",
+    "baseData": {
+      "ver": 2,
+      "name": "$0 post test",
+      "properties": {
+        "vm": "$(hostname)",
+        "checks": "\"{\"distro\":\"$DISTRO\",\"IMDSReturn\":\"$IMDSHTTPRC\",\"WireReturn\":\"$WIREHTTPRC\",\"WireExtn\":\"$WIREEXTPORT\",\"DiskSpace\":\"$FSFULLPCENT\"}\""
+      }
+    }
+  }
+}
+EOF
+)
+# ^^^ not happy with that really, the 'checks' ends up as a big string, instead of sub objects, but maybe AI has to be that way
+        #"checks": {\"distro\":\"${DISTRO}\",\"IMDSReturn\":\"${IMDSHTTPRC}\",\"WireReturn\":\"${WIREHTTPRC}\",\"WireExtn\":\"${WIREEXTPORT}\",\"DiskSpace\":\"${FSFULLPCENT}\"}
+CURLARGS="-i "
+# intentionally clearing the var, to save the old version for posterity
+CURLARGS=""
+if [ $DEBUG -gt 0 ]; then
+  # not sure what to do here
+  true
+else
+  CURLARGS="$CURLARGS --show-error --silent "
+fi
+echo "ARGS=:$CURLARGS"
+curl $CURLARGS -X POST "${AI_ENDPOINT}" -H "Content-Type: application/json" -d "${jsonPayloadEvent}"
+#echo "----"
+#echo $jsonPayloadEvent
+#echo "----"
+
+loggy "$0 finished at $(date --rfc-3339=seconds)"
