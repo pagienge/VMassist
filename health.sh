@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
+# Description - Diagnostic script for the Azure Linux Agent.  Intended to be run by 
+#  support personnel or system administrators to identify commonly identified issues
+#  causing 'agent not ready' situations.
+# Usage
+#  Syntax: $0 [-h|-v]"
+#    options:"
+#      -h     Print this Help."
+#      -v     Verbose mode."
+#
 # Need 
 # - license statement
 # - disclaimers
 # - any other legalise
-# - statement of usage
 
-source /etc/os-release
+# defaults for the script structure
 DEBUG=0
 LOGDIR="/var/log/azure"
 LOGFILE="$LOGDIR/waagenthealth.log"
@@ -13,7 +21,18 @@ FSFULLPCENT=90
 FSFULLPCENT=10 # arbitrarily low testing value.  Release should set this to 90 or more
 STARTTIME=$(date --rfc-3339=seconds)
 
-# function defs
+# variable defaults for derived values
+source /etc/os-release
+DISTRO="hm-linux"
+PY="/usr/bin/python3"
+SERVICE="waagent.service"
+PKG="rpm"
+DNF="dnf"
+UNITFILE="/usr/bin/false"
+UNITSTAT="undef"
+UNITSTATRC=0
+
+# function definitions
 function loggy {
   # simple logging handler
   # - writes output to the defined log file
@@ -22,6 +41,37 @@ function loggy {
     echo "$1"
   fi
   echo "$(date +%FT%T%z)  $1" >> $LOGFILE
+}
+
+function testPyMod {
+  # Test if a python module can be loaded by the given binary. Initial intention is for:
+  # - testing if the agent module is usable
+  # - testing for any modules we would need if we hand off to python for more diagnostics
+  # Args 
+  #   $1 = python version to use
+  #   $2 = module to check
+  # Return
+  #   0 = module is fine
+  #   1 = can't find module (might be present but not for the *given* python)
+
+$1 << EOF
+
+import importlib
+
+def check_module(module_name):
+    try:
+        importlib.import_module(module_name)
+        #return f"The module '{module_name}' exists."
+        return 0
+    except ModuleNotFoundError:
+        #return f"The module '{module_name}' does not exist."
+        return 1
+
+
+exit (check_module("$2"))
+EOF
+
+return $?
 }
 # END function defs
 
@@ -106,16 +156,6 @@ if [ -t 1 ] ; then
 else
   TERM=false
 fi
-
-# processing variable defaults - different than the script util defaults at the start of the script
-DISTRO="hm-linux"
-PY="/usr/bin/python3"
-SERVICE="waagent.service"
-PKG="rpm"
-DNF="dnf"
-UNITFILE="/usr/bin/false"
-UNITSTAT="undef"
-UNITSTATRC=0
 
 # distro determination
 # Set this from sourcing os-release.  We'll have to be able to distill down all the different 'flavors' and how
@@ -252,6 +292,24 @@ else
 fi
 loggy "Python owning package : $PYOWNER"
 loggy "Package from repository:$PYREPO"
+
+## Python functional checks
+# - modules
+#   We have *a* python version, as defined in the scripts, so verify if a couple of modules exist
+# 'requests'
+PYREQ=""
+if [ testPyMod($PYPATH, "requests") ]; then
+  PYREQ="loaded"
+else
+  PYREQ="failed to load"
+fi
+# 'azurelinuxagent.agent'
+PYALA=""
+if [ testPyMod($PYPATH, "azurelinuxagent.agent") ]; then
+  PYALA="loaded"
+else
+  PYALA="failed to load"
+fi
 
 ## CONNECTIVITY CHECKS
 # -- These are great candidates for moving 'into' python
@@ -406,6 +464,8 @@ LOGSTRING="$LOGSTRING::PY:$PY"
 LOGSTRING="$LOGSTRING::PYVERS:$PYVERSION"
 LOGSTRING="$LOGSTRING::PYPKG:$PYOWNER"
 LOGSTRING="$LOGSTRING::PYREPO:$PYREPO"
+LOGSTRING="$LOGSTRING::PYREQ:$PYREQ"
+LOGSTRING="$LOGSTRING::PYALA:$PYALA"
 LOGSTRING="$LOGSTRING::WIRE:$WIREHTTPRC"
 LOGSTRING="$LOGSTRING::WIREEXTPORT:$WIREEXTPORT"
 LOGSTRING="$LOGSTRING::IMDS:$IMDSHTTPRC"
@@ -425,6 +485,8 @@ echo -e "python path:    $PY"
 echo -e "python version: $PYVERSION"
 echo -e "python package: $PYOWNER"
 echo -e "python repo:    $PYREPO"
+echo -e "python mod req: "$(printColorCondition $PYREQ "$PYREQ" "loaded")
+echo -e "python mod ala: "$(printColorCondition $PYALA "$PYALA" "loaded")
 echo -e "IMDS HTTP CODE: $(printColorCondition $IMDSHTTPRC $IMDSHTTPRC 200)"
 echo -e "WIRE HTTP CODE: $(printColorCondition $WIREHTTPRC $WIREHTTPRC 200)"
 echo -e "WIRE EXTN PORT: "$(printColorCondition "$WIREEXTPORT" "$WIREEXTPORT" "open")
