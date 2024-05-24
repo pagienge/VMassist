@@ -16,21 +16,44 @@
 # defaults for the script structure
 DEBUG=0
 LOGDIR="/var/log/azure"
-LOGFILE="$LOGDIR/waagenthealth.log"
+LOGFILE="$LOGDIR/"$(basename $0)".log"
 FSFULLPCENT=90
 FSFULLPCENT=10 # arbitrarily low testing value.  Release should set this to 90 or more
 STARTTIME=$(date --rfc-3339=seconds)
+
+# Telemetry
+AI_INSTRUMENTATION_KEY="8491943e-98da-4d75-b5b1-de88a6203eb5"
+AI_ENDPOINT="https://dc.services.visualstudio.com/v2/track"
+
 
 # variable defaults for derived values
 source /etc/os-release
 DISTRO="hm-linux"
 PY="/usr/bin/python3"
+PYCOUNT=0
+PYSTAT=0  # we will use this variable to flag if it's ok to spawn the python sub-script or if we just error out here
 SERVICE="waagent.service"
 PKG="rpm"
 DNF="dnf"
 UNITFILE="/usr/bin/false"
 UNITSTAT="undef"
 UNITSTATRC=0
+
+# process command-line switches
+while getopts ":hv" option; do
+   case $option in
+      h) # display Help
+        help
+        exit;;
+      v) # turn on verbose mode
+        DEBUG=1
+        ;;
+      \?) # Invalid option
+        echo "Error: Invalid option"
+        exit;;
+   esac
+done
+
 
 # function definitions
 function loggy {
@@ -54,7 +77,7 @@ function testPyMod {
   #   0 = module is fine
   #   1 = can't find module (might be present but not for the *given* python)
 
-$1 << EOF
+  PYOUT=$($1 << EOF
 
 import importlib
 
@@ -70,12 +93,13 @@ def check_module(module_name):
 
 exit (check_module("$2"))
 EOF
-
-return $?
+)
+  RETVAL=$?
+  loggy "Using $1 to test $2 module: $PYOUT"
+  return $RETVAL
 }
-# END function defs
 
-help()
+function help()
 {
    # Display help block
    echo "Azure Agent health check script"
@@ -86,22 +110,6 @@ help()
    echo "-v     Verbose mode."
    echo
 }
-
-# process command-line switches
-while getopts ":hv" option; do
-   case $option in
-      h) # display Help
-        help
-        exit;;
-      v) # turn on verbose mode
-        DEBUG=1
-        ;;
-      \?) # Invalid option
-        echo "Error: Invalid option"
-        exit;;
-   esac
-done
-
 
 function printColorCondition {
 # Function to output a colored message, if the current terminal/output supports colors
@@ -136,13 +144,16 @@ function printColorCondition {
     echo "$2"
   fi
 }
+# END function defs
+
+## Start normal processing
 
 # create the log file/directory once
 if [ $EUID == 0 ]; then
   if [ ! -d $LOGDIR ]; then
     mkdir -p $LOGDIR
     logger "$0 created $LOGDIR for logging"
-    loggy "Creating $LOGDIR - this could indicate larger problems"
+    loggy "Creating $LOGDIR - this could indicate larger problems such as no azure bits present"
   fi
 else
   echo "Not running as root, logging may fail and some checks will not run"
@@ -186,7 +197,7 @@ case "$ID_LIKE" in
 esac
 loggy "Distribution family found to be $DISTRO"
 
-
+#### THIS CODE BLOCK IS REDUNDANT
 # The base executable for the agent is always waagent, the difference is in how it's called and what python is being
 #  called inside the exe... and maybe where it is located
 loggy "Checking for agent executable"
@@ -197,14 +208,17 @@ if [ -z ${EXE} ] ; then
 else
   loggy "Found waagent at $EXE"
   # pull the top line of the waagent 'executable' out and strip off #! to find out how we call 'python'
+  # this probably should move down below, at which point this else block will be just for reporting/logging
   PY=$(head -n1 $EXE | cut -c 3-)
 fi
+#### END REDUNDANT
 
 # We could either have one big if-fi structure checking distros and all the checks below in the per-distro blocks, or have these 
 #  repeated if-fi blocks for the distro detection in each type of check. Pick your poison
 
 # find the systemd unit for the Azure agent, what package owns it, and what repository that package came from
 #  this is to catch any strange installations, and possibly the repo will indicate an appliance/custom image
+#  - We could wrap this in a 'systemd check', but as of 2024 everything we care about runs systemd
 UNITFILE=$(systemctl show $SERVICE -p FragmentPath | cut -d= -f2)
 if [[ $UNITFILE ]]; then
   loggy "Agent systemd unit located at $UNITFILE"
@@ -230,8 +244,7 @@ if [[ $UNITFILE ]]; then
   UNITSTATRC=$?
   loggy "Unit activity test: $UNITSTAT :: RC:$UNITSTATRC"
   
-  # Check python and it's origin
-
+  # Check python and its origin
   PYPATH=$(systemctl show $SERVICE -q -p ExecStart | tr " " "\n" | grep python | cut -d "=" -f 2 | uniq)
   # check if we retrieved a python path, which may be false if the unit file only calls waagent instead of calling it as an arg to python
   #  This is most common on RH but may happen elsewhere
@@ -240,8 +253,8 @@ if [[ $UNITFILE ]]; then
     WAPATH=$(systemctl show $SERVICE -q -p ExecStart | tr " " "\n" | grep waagent | cut -d "=" -f 2 | uniq)
     
     if [ -z ${WAPATH} ] ; then
-      # this shouldn't be a valid codepath since waagent wasn't found, and PYPATH comes from the unit
-      # no agent found, maybe change a variable for later
+      # this shouldn't be a valid codepath since waagent wasn't found, and PYPATH comes from the same unit providing WAPATH
+      # no agent found, maybe alter a 'failure' variable for later
       false
     else
       # go search the waagent executable (which is a script) for the python package it will call
@@ -257,10 +270,50 @@ if [[ $UNITFILE ]]; then
     loggy "Python called explicitly from the systemd unit :: $PYPATH"
     PY=$(readlink -f $PYPATH)
   fi
+  # Ve should have validated the agent unit exists, so start 
+  #  to do some checking for things dependent on the agent package being present
+
+  # WAAgent config directives
+  loggy "Checking agent configuration parameters by running 'waagent --show-configuration'"
+  if [ -z ${EXE} ] ; then
+    # no agent found, maybe change a variable for later, but EXE being 'null' should be good enough
+    loggy "skipping config checks, no waagent found"
+  else
+    # -- there is probably a way to reuse this code and pass in the value we want to check, but not doing that right now
+    loggy "Checking extension enablement"
+    #  We're just reporting the config values
+    EXTENS=$($EXE --show-configuration 2> /dev/null | grep -i 'Extensions.Enabled' | tr '[:upper:]' '[:lower:]'| tr -d '[:space:]' | cut -d = -f 2 )
+    EXTENSMSG="enabled" # default
+    if [ -z $EXTENS ]; then
+      # this shouldn't happen unless waagent wasn't located correctly
+      EXTENS="undef"
+      EXTENSMSG="undef"
+    else
+      loggy "Extensions.Enabled config : $EXTENS"
+      EXTENSMSG="$EXTENS (actual value)"
+    fi
+    loggy "Checking AutoUpdate"
+    AUTOUP=$($EXE --show-configuration 2> /dev/null | grep -i 'AutoUpdate.Enabled' | tr '[:upper:]' '[:lower:]'| tr -d '[:space:]' | cut -d = -f 2 )
+    AUTOUPMSG="enabled" # default
+    if [ -z $AUTOUP ]; then
+      # this shouldn't happen unless waagent wasn't located correctly
+      AUTOUP="undef"
+      AUTOUPMSG="undef"
+    else
+      loggy "AutoUpdate.Enabled config : $AUTOUP"
+      AUTOUPMSG="$AUTOUP (actual value)"
+    fi
+  fi
 else
+  # this is the "no agent unit" block, so treat everything like a critical failure here
   # move more of the vars above into this 'bad variables' stanza to signal that things are failing
   OWNER="systemd"
   REPO="undef"
+  EXTENS="agent not found"
+  EXTENSMSG="agent not found"
+  AUTOUP="agent not found"
+  AUTOUPMSG="agent not found"
+  # set PY/PYBIN in here as a fallback, after the redundancy is cleared above
 fi
 
 # quick check and log the version of python
@@ -270,7 +323,8 @@ loggy "Python=$PYVERSION"
 
 # now that we should definitively have a python path, find out who owns it.  If this is still empty, just fail, since waagen't
 # didn't eval out, maybe waagent doesn't even exist??
-# We will use 'PYPATH' rather than the derived PY to find out where this specific link came from
+# PY could be the end-result of dereferencing PYPATH, but we need to know where the PYPATH came 
+#   from because that's who waagent calls
 loggy "Checking who provides $PYPATH"
 if [[ $PYPATH ]]; then
   if [[ $DISTRO == "debian" ]]; then
@@ -295,20 +349,36 @@ loggy "Package from repository:$PYREPO"
 
 ## Python functional checks
 # - modules
-#   We have *a* python version, as defined in the scripts, so verify if a couple of modules exist
+#   We have *a* python version, as defined in the scripts, so verify if a couple of modules can be imp'd
 # 'requests'
 PYREQ=""
-if [ testPyMod($PYPATH, "requests") ]; then
+if testPyMod $PYPATH "requests" ; then
   PYREQ="loaded"
 else
-  PYREQ="failed to load"
+  PYREQ="failed"
+  PYSTAT=1
 fi
 # 'azurelinuxagent.agent'
 PYALA=""
-if [ testPyMod($PYPATH, "azurelinuxagent.agent") ]; then
+if  testPyMod $PYPATH  "azurelinuxagent.agent" ; then
   PYALA="loaded"
 else
-  PYALA="failed to load"
+  PYALA="failed"
+  PYSTAT=1
+fi
+# How many pythons (not snakes) are in the 'path'
+#  We're just going to count it and log, anything other than 1 is cause for caution
+PYCOUNT=$(find /usr/bin -name python\* -type f | wc -l)
+if [ $PYSTAT -gt 0 ]; then
+  # python is inconsistent, lets error here and put out basic summaries at this point.
+  # this is where all the 'old' final output will go once the py script is implented
+  loggy "Python checks failed quick-exiting with status"
+else
+  # We'll go call the python sub-script here, since we should be
+  #  able to at least 'function' in portable py code
+  loggy "Python seems sane, spawning VMassist.py"
+  loggy "--- there is no VMassist.py... yet"
+  loggy "VMassist.py exited"
 fi
 
 ## CONNECTIVITY CHECKS
@@ -401,38 +471,6 @@ else
   IMDSHTTPRC="Not run as root"
 fi
 
-# Check some agent config items
-loggy "Checking agent configuration parameters by running 'waagent --show-configuration'"
-if [ -z ${EXE} ] ; then
-  # no agent found, maybe change a variable for later, but EXE being 'null' should be good enough
-  loggy "skipping config checks, no waagent found"
-else
-  # -- there is probably a way to reuse this code and pass in the value we want to check, but not doing that right now
-  loggy "Checking extension enablement"
-  #  We're just reporting the config values
-  EXTENS=$($EXE --show-configuration 2> /dev/null | grep -i 'Extensions.Enabled' | tr '[:upper:]' '[:lower:]'| tr -d '[:space:]' | cut -d = -f 2 )
-  EXTENSMSG="enabled" # default
-  if [ -z $EXTENS ]; then
-    # this shouldn't happen unless waagent wasn't located correctly
-    EXTENS="undef"
-    EXTENSMSG="undef"
-  else
-    loggy "Extensions.Enabled config : $EXTENS"
-    EXTENSMSG="$EXTENS (actual value)"
-  fi
-  loggy "Checking AutoUpdate"
-  AUTOUP=$($EXE --show-configuration 2> /dev/null | grep -i 'AutoUpdate.Enabled' | tr '[:upper:]' '[:lower:]'| tr -d '[:space:]' | cut -d = -f 2 )
-  AUTOUPMSG="enabled" # default
-  if [ -z $AUTOUP ]; then
-    # this shouldn't happen unless waagent wasn't located correctly
-    AUTOUP="undef"
-    AUTOUPMSG="undef"
-  else
-    loggy "AutoUpdate.Enabled config : $AUTOUP"
-    AUTOUPMSG="$AUTOUP (actual value)"
-  fi
-
-fi
 
 # Network checks
 # STUFF=$(curl -s -H Metadata:true --noproxy "*" "http://169.254.169.254/metadata/instance/network/interface/0/ipv4/ipAddress/0/?api-version=2023-07-01")
@@ -440,12 +478,14 @@ fi
 # What IPs do we have
 # what MAC is defined in Azure
 # curl -s -H Metadata:true --noproxy "*" "http://169.254.169.254/metadata/instance/network/interface/0/?api-version=2023-07-01" | jq
+# -- this will move into the python sub-script when implemented
 
 # other general system checks
 # look for any full filesystems, as a courtesy, and because sometimes agent blows up if /var is too full
 FULLFS="none"
 
 # Cryptic command to format the output of df, then parse it, and compare to the defined $FSFULLPCENT
+# this will go into the subscript, and move this line into the 'bad python block so that we always get a disk check'
 DFOUT=$(df -hl --type ext4 --type xfs --type vfat --type btrfs --type ext3 --output=target,pcent | tail -n+2 | while read path pcent ; do pcent=${pcent%\%}; if [ "$pcent" -ge $FSFULLPCENT ]; then   echo "$path=>$pcent"; fi; done)
 if [[ $DFOUT ]] ; then
   FULLFS=$DFOUT
@@ -464,6 +504,7 @@ LOGSTRING="$LOGSTRING::PY:$PY"
 LOGSTRING="$LOGSTRING::PYVERS:$PYVERSION"
 LOGSTRING="$LOGSTRING::PYPKG:$PYOWNER"
 LOGSTRING="$LOGSTRING::PYREPO:$PYREPO"
+LOGSTRING="$LOGSTRING::PYCOUNT:$PYCOUNT"
 LOGSTRING="$LOGSTRING::PYREQ:$PYREQ"
 LOGSTRING="$LOGSTRING::PYALA:$PYALA"
 LOGSTRING="$LOGSTRING::WIRE:$WIREHTTPRC"
@@ -475,31 +516,31 @@ LOGSTRING="$LOGSTRING::FULLFS:$FULLFS"
 loggy $LOGSTRING
 
 # output our report to the 'console'
-echo -e "Distro Family:  $DISTRO"
-echo -e "Agent Service:  $SERVICE"
-echo -e "Agent status:   $(printColorCondition $UNITSTATRC $UNITSTAT)"
-echo -e "Unit file:      $UNITFILE"
-echo -e "Unit package:   $OWNER"
-echo -e "Repo for Unit:  $REPO"
-echo -e "python path:    $PY"
-echo -e "python version: $PYVERSION"
-echo -e "python package: $PYOWNER"
-echo -e "python repo:    $PYREPO"
-echo -e "python mod req: "$(printColorCondition $PYREQ "$PYREQ" "loaded")
-echo -e "python mod ala: "$(printColorCondition $PYALA "$PYALA" "loaded")
-echo -e "IMDS HTTP CODE: $(printColorCondition $IMDSHTTPRC $IMDSHTTPRC 200)"
-echo -e "WIRE HTTP CODE: $(printColorCondition $WIREHTTPRC $WIREHTTPRC 200)"
-echo -e "WIRE EXTN PORT: "$(printColorCondition "$WIREEXTPORT" "$WIREEXTPORT" "open")
+echo -e "Distro Family:   $DISTRO"
+echo -e "Agent Service:   $SERVICE"
+echo -e "Agent status:    $(printColorCondition $UNITSTATRC $UNITSTAT)"
+echo -e "Unit file:       $UNITFILE"
+echo -e "Unit package:    $OWNER"
+echo -e "Repo for Unit:   $REPO"
+echo -e "python path:     $PY"
+echo -e "python version:  $PYVERSION"
+echo -e "pythons present: $(printColorCondition $PYCOUNT $PYCOUNT 1)"
+echo -e "python package:  $PYOWNER"
+echo -e "python repo:     $PYREPO"
+echo -e "python mod req:  "$(printColorCondition "$PYREQ" "$PYREQ" "loaded")
+echo -e "python mod ala:  "$(printColorCondition "$PYALA" "$PYALA" "loaded")
+echo -e "IMDS HTTP CODE:  $(printColorCondition $IMDSHTTPRC $IMDSHTTPRC 200)"
+echo -e "WIRE HTTP CODE:  $(printColorCondition $WIREHTTPRC $WIREHTTPRC 200)"
+echo -e "WIRE EXTN PORT:  "$(printColorCondition "$WIREEXTPORT" "$WIREEXTPORT" "open")
 # these could either be 'yes|no' or 'true|false'... using the most common defaults for the 'good' string value
-echo -e "Extensions:     "$(printColorCondition $EXTENS "$EXTENSMSG" "true")
-echo -e "AutoUpgrade:    "$(printColorCondition $AUTOUP "$AUTOUPMSG" "true")
+echo -e "Extensions:      "$(printColorCondition $EXTENS "$EXTENSMSG" "true")
+echo -e "AutoUpgrade:     "$(printColorCondition $AUTOUP "$AUTOUPMSG" "true")
 # System checks
 echo -e "Volumes >$FSFULLPCENT%:   "$(printColorCondition "$FULLFS" "$FULLFS" "none")
 
 
-AI_INSTRUMENTATION_KEY="8491943e-98da-4d75-b5b1-de88a6203eb5"
-AI_ENDPOINT="https://dc.services.visualstudio.com/v2/track"
-
+# refactoring this JSON posting to be minimal, for instances when python is unworkable, a short-circuit if you will
+#  in all other situations this base code will spawn a python script to take t/s further
 jsonPayloadEvent=$(cat <<EOF
 {
   "iKey": "${AI_INSTRUMENTATION_KEY}",
@@ -509,10 +550,13 @@ jsonPayloadEvent=$(cat <<EOF
     "baseType": "EventData",
     "baseData": {
       "ver": 2,
-      "name": "$0 post test",
+      "name": "${0} post test",
       "properties": {
         "vm": "$(hostname)",
-        "checks": "\"{\"distro\":\"$DISTRO\",\"IMDSReturn\":\"$IMDSHTTPRC\",\"WireReturn\":\"$WIREHTTPRC\",\"WireExtn\":\"$WIREEXTPORT\",\"DiskSpace\":\"$FSFULLPCENT\"}\""
+        "os": "linux",
+        "distro": "${DISTRO}",
+        "logString": "${LOGSTRING}",
+        "checks": "\"{\"python\":\"$PY\",\"pycount\":\"$PYCOUNT\",\"PyVersion\":\"$PYVERSION\",\"WAAOwner\":\"$OWNER\",\"IMDSReturn\":\"$IMDSHTTPRC\",\"WireReturn\":\"$WIREHTTPRC\",\"WireExtn\":\"$WIREEXTPORT\",\"DiskSpace\":\"$FSFULLPCENT\"}\""
       }
     }
   }
@@ -531,7 +575,8 @@ else
   CURLARGS="$CURLARGS --show-error --silent "
 fi
 echo "ARGS=:$CURLARGS"
-curl $CURLARGS -X POST "${AI_ENDPOINT}" -H "Content-Type: application/json" -d "${jsonPayloadEvent}"
+loggy "not posting to AI"
+#curl $CURLARGS -X POST "${AI_ENDPOINT}" -H "Content-Type: application/json" -d "${jsonPayloadEvent}"
 #echo "----"
 #echo $jsonPayloadEvent
 #echo "----"
