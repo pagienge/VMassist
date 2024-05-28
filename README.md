@@ -1,17 +1,19 @@
 # Health check script for Azure Agent on Linux - waagent
+VMassist is a combination of bash and python scripts intended to be used to diagnose issues with the Azure agent in a Linux VM, and related issues with the general health of the VM.
 
-## Purpose
-This is intended as a troubleshooting tool for the Azure Agent on Linux, and some related resources.  The intent is to identify common issues and present them in an easy-to-consume format, with the output mindset that this can be run in a limited-size serial console.
+Running the VMassist.sh script will generate a serial-console-friendly summary of checks, as the intent is to identify common issues and present them in an easy-to-consume format given that troubleshooting is often done in the limited-size serial console  Further logging is done to /var/log/azure
 
-Logging is attempted to /var/log/azure/waagenthealth.log with full details, regardless of 
+## Prerequisites
+There are two components of the script
+- basic diagnostics done in the bash script, with the aim of validating the base OS issues and most importantly the python environment
+- more comprehensive checks in python
 
 ## Usage
-- Run as root, or through sudo
-- installation location TBD
+- download the bootstrapping script - bootstrap-VMassist.sh
+- run `bootstrap-VMassist.sh` to get both scripts and place in a temporary location
+- Run the `VMassist.sh` from the path reported in the output of `bootstrap-VMassist.sh` as root, or through sudo
 
-Syntax: health.sh [-h|v]
+Syntax: VMassist.sh [-h|v]
 - options:
-
    -h     Print this Help.
-   
    -v     Verbose mode.
