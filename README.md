@@ -9,10 +9,18 @@ There are two components of the script
 - more comprehensive checks in python
 
 ## Usage
+### automatic download
+- run `bash <(curl -sL https://raw.githubusercontent.com/pagienge/walinuxagenthealth/main/bootstrap-VMassist.sh)`
+
+### manual download
 - download the bootstrapping script - bootstrap-VMassist.sh
 - run `bootstrap-VMassist.sh` to get both scripts and place in a temporary location
+
+### Running VMassist
+- neither of the 'download' procedures will automatically run the diagnostic script
 - Run the `VMassist.sh` from the path reported in the output of `bootstrap-VMassist.sh` as root, or through sudo
 
+### syntax
 Syntax: VMassist.sh [-h|v]
 - options:
    -h     Print this Help.

@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 
-DEPLOYPATH="/tmp/VMassist"
+DLPATH="/tmp/VMassist"
 
-echo "Creating $DEPLOYPATH"
-mkdir $DEPLOYPATH
+echo "Creating $DLPATH"
+mkdir $DLPATH
 
 echo "downloading script(s)"
-wget --directory-prefix=$DEPLOYPATH https://raw.githubusercontent.com/pagienge/walinuxagenthealth/main/VMassist.sh
-wget --directory-prefix=$DEPLOYPATH https://raw.githubusercontent.com/pagienge/walinuxagenthealth/main/VMassist.py
+wget --no-verbose --show-progress --directory-prefix=$DLPATH https://raw.githubusercontent.com/pagienge/walinuxagenthealth/main/VMassist.sh
+chmod +x $DLPATH/VMassist.sh
+wget --no-verbose --show-progress --directory-prefix=$DLPATH https://raw.githubusercontent.com/pagienge/walinuxagenthealth/main/VMassist.py
 
- cd $DEPLOYPATH
- echo "Script will not be auto-run, please run $DEPLOYPATH/VMassist.sh once you have reviewed the content of the downloaded script(s)"
- exit
+ cd $DLPATH
+ echo "Script will not be auto-run, please run $DLPATH/VMassist.sh once you have reviewed the content of the downloaded script(s)"
+ return $?
  
