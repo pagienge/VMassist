@@ -82,15 +82,13 @@ function testPyMod {
 import importlib
 
 def check_module(module_name):
-    try:
-        importlib.import_module(module_name)
-        #return f"The module '{module_name}' exists."
-        return 0
-    except ModuleNotFoundError:
-        #return f"The module '{module_name}' does not exist."
-        return 1
-
-
+  try:
+    importlib.import_module(module_name)
+    print("The module '{}' exists."+format(module_name))
+    return 0
+  except ModuleNotFoundError:
+    print("Cannot load '{}'"+format(module_name))
+    return 1
 exit (check_module("$2"))
 EOF
 )
@@ -270,7 +268,7 @@ if [[ $UNITFILE ]]; then
     loggy "Python called explicitly from the systemd unit :: $PYPATH"
     PY=$(readlink -f $PYPATH)
   fi
-  # Ve should have validated the agent unit exists, so start 
+  # We should have validated the agent unit exists, so start 
   #  to do some checking for things dependent on the agent package being present
 
   # WAAgent config directives
@@ -317,11 +315,12 @@ else
 fi
 
 # quick check and log the version of python
+#  this could be done with --version, but then you get other fluff
 loggy "Checking $PY version"
-PYVERSION=$($PY --version)
+PYVERSION=$($PY -c 'import sys; print(str(sys.version_info.major)+"."+str(sys.version_info.minor)+"."+str(sys.version_info.micro))')
 loggy "Python=$PYVERSION"
 
-# now that we should definitively have a python path, find out who owns it.  If this is still empty, just fail, since waagen't
+# now that we should definitively have a python path, find out who owns it.  If this is still empty, just fail, since waagent
 # didn't eval out, maybe waagent doesn't even exist??
 # PY could be the end-result of dereferencing PYPATH, but we need to know where the PYPATH came 
 #   from because that's who waagent calls
@@ -335,8 +334,7 @@ if [[ $PYPATH ]]; then
     PYOWNER=$($PKG -q --whatprovides $PYPATH | cut -d: -f1)
     PYREPO=$(zypper --quiet -s 11 se -i -t package -s $PYOWNER | grep "^i" | awk '{print $6}')
   else
-    # works for RHEL, suse WIP
-    # Mariner does something different for the 'from repo' part
+    # works for RHEL, Mariner does something different for the 'from repo' part, so we'll just act like it's RH for now
     PYOWNER=$($PKG -q --whatprovides $PYPATH | cut -d: -f1)
     PYREPO=$($DNF info  $PYOWNER 2>/dev/null | grep -i "From repo" | tr -d '[:blank:]'| cut -d: -f2)
   fi
@@ -351,12 +349,13 @@ loggy "Package from repository:$PYREPO"
 # - modules
 #   We have *a* python version, as defined in the scripts, so verify if a couple of modules can be imp'd
 # 'requests'
+loggy "Checking to see if this python can load the modules we require"
 PYREQ=""
 if testPyMod $PYPATH "requests" ; then
   PYREQ="loaded"
 else
   PYREQ="failed"
-  PYSTAT=1
+  PYSTAT=$(($PYSTAT+1)) # if we can't load 'requests' then a lot of things are going to break - also this may be an illegitimate python
 fi
 # 'azurelinuxagent.agent'
 PYALA=""
@@ -364,21 +363,35 @@ if  testPyMod $PYPATH  "azurelinuxagent.agent" ; then
   PYALA="loaded"
 else
   PYALA="failed"
-  PYSTAT=1
+  PYSTAT=$(($PYSTAT+2)) # if we can't load the agent module then either waagent will fail entirely, or this could be an illegitimate python
 fi
-# How many pythons (not snakes) are in the 'path'
-#  We're just going to count it and log, anything other than 1 is cause for caution
-PYCOUNT=$(find /usr/bin -name python\* -type f | wc -l)
-if [ $PYSTAT -gt 0 ]; then
-  # python is inconsistent, lets error here and put out basic summaries at this point.
-  # this is where all the 'old' final output will go once the py script is implented
-  loggy "Python checks failed quick-exiting with status"
+# argparse - https://docs.python.org/3/library/argparse.html
+if  testPyMod $PYPATH  "argparse" ; then
+  PYARG="loaded"
 else
-  # We'll go call the python sub-script here, since we should be
-  #  able to at least 'function' in portable py code
-  loggy "Python seems sane, spawning VMassist.py"
-  loggy "--- there is no VMassist.py... yet"
-  loggy "VMassist.py exited"
+  PYARG="failed"
+  PYSTAT=$(($PYSTAT+4)) # if we can't load argparse then we won't be able to spawn the subscript successfully - maybe python is <3.2
+fi
+loggy "finished checking python modules"
+# How many pythons (not snakes) are in the 'path'
+#  We're just going to count it and log, anything other than 1 is cause for caution, but not necessarily enough to error out
+loggy "Counting pythons in /usr/bin"
+PYCOUNT=$(find /usr/bin -name python\* -type f | wc -l)
+PYCOUNTSTAT=$PYCOUNT
+# handle the case where there are no 'real' python bins in /usr/bin, but python3 is a link which eventually points to some sort of 'platform-python', which is OK
+if [[ $PYCOUNT == 0 ]]; then
+  loggy "Found no real python binaries in /usr/bin"
+  DEREFPY=$(readlink -f /usr/bin/python3)
+  if [[ $DEREFPY =~ "platform-python" ]]; then
+    PYCOUNT=1
+    PYCOUNTSTAT="Python symlinked to platform-python"
+    loggy "Alternative state for python3 - symlinked to $DEREFPY which is safe"
+  else
+    loggy "python status out of an expected state - manually investigate"
+    PYCOUNTSTAT="Unexpected python state"
+  fi
+else
+  loggy "Found $PYCOUNT python files in /usr/bin, informational only, see where python3 is pointing"
 fi
 
 ## CONNECTIVITY CHECKS
@@ -413,7 +426,8 @@ except requests.exceptions.ConnectionError as errc:
   print ("ConnectErr")
 except requests.exceptions.RequestException as err:
   print ("UnexpectedErr")
-EOF`
+EOF
+`
 
   loggy "Checking wireserver access"
   WIREHTTPRC=`/usr/bin/env $PY - <<EOF
@@ -438,7 +452,8 @@ except requests.exceptions.ConnectionError as errc:
   print ("ConnectErr")
 except requests.exceptions.RequestException as err:
   print ("UnexpectedErr")
-EOF`
+EOF
+`
 
   # test the "other" wire server port - 
   # this doesn't respond to casual http requests, so for now do a low level nc
@@ -486,49 +501,48 @@ FULLFS="none"
 
 # Cryptic command to format the output of df, then parse it, and compare to the defined $FSFULLPCENT
 # this will go into the subscript, and move this line into the 'bad python block so that we always get a disk check'
-DFOUT=$(df -hl --type ext4 --type xfs --type vfat --type btrfs --type ext3 --output=target,pcent | tail -n+2 | while read path pcent ; do pcent=${pcent%\%}; if [ "$pcent" -ge $FSFULLPCENT ]; then   echo "$path=>$pcent"; fi; done)
+DFOUT=$(df -hl --type ext4 --type xfs --type vfat --type btrfs --type ext3 --output=target,pcent | tail -n+2 | while read path pcent ; do pcent=${pcent%\%}; if [ "$pcent" -ge $FSFULLPCENT ]; then   echo "$path:$pcent"; fi; done)
 if [[ $DFOUT ]] ; then
   FULLFS=$DFOUT
 fi
 
 # make a log-friendly report, possibly for easy parsing
-LOGSTRING=""
-LOGSTRING="$LOGSTRING::DISTRO:$DISTRO"
-LOGSTRING="$LOGSTRING::SERVICE:$SERVICE"
-LOGSTRING="$LOGSTRING::SRVSTAT:$UNITSTAT"
-LOGSTRING="$LOGSTRING::SRVRC:$UNITSTATRC"
-LOGSTRING="$LOGSTRING::UNIT:$UNITSTAT"
-LOGSTRING="$LOGSTRING::UNITPKG:$OWNER"
-LOGSTRING="$LOGSTRING::REPO:$REPO"
-LOGSTRING="$LOGSTRING::PY:$PY"
-LOGSTRING="$LOGSTRING::PYVERS:$PYVERSION"
-LOGSTRING="$LOGSTRING::PYPKG:$PYOWNER"
-LOGSTRING="$LOGSTRING::PYREPO:$PYREPO"
-LOGSTRING="$LOGSTRING::PYCOUNT:$PYCOUNT"
-LOGSTRING="$LOGSTRING::PYREQ:$PYREQ"
-LOGSTRING="$LOGSTRING::PYALA:$PYALA"
-LOGSTRING="$LOGSTRING::WIRE:$WIREHTTPRC"
-LOGSTRING="$LOGSTRING::WIREEXTPORT:$WIREEXTPORT"
-LOGSTRING="$LOGSTRING::IMDS:$IMDSHTTPRC"
-LOGSTRING="$LOGSTRING::EXTN:$EXTENS"
-LOGSTRING="$LOGSTRING::AUTOUP:$AUTOUP"
-LOGSTRING="$LOGSTRING::FULLFS:$FULLFS"
+LOGSTRING="DISTRO=$DISTRO"
+LOGSTRING="$LOGSTRING|SERVICE=$SERVICE"
+LOGSTRING="$LOGSTRING|SRVSTAT=$UNITSTAT"
+LOGSTRING="$LOGSTRING|SRVRC=$UNITSTATRC"
+LOGSTRING="$LOGSTRING|UNIT=$UNITSTAT"
+LOGSTRING="$LOGSTRING|UNITPKG=$OWNER"
+LOGSTRING="$LOGSTRING|REPO=$REPO"
+LOGSTRING="$LOGSTRING|PY=$PY"
+LOGSTRING="$LOGSTRING|PYVERS=$PYVERSION"
+LOGSTRING="$LOGSTRING|PYPKG=$PYOWNER"
+LOGSTRING="$LOGSTRING|PYREPO=$PYREPO"
+LOGSTRING="$LOGSTRING|PYCOUNT=$PYCOUNT"
+LOGSTRING="$LOGSTRING|PYREQ=$PYREQ"
+LOGSTRING="$LOGSTRING|PYALA=$PYALA"
+LOGSTRING="$LOGSTRING|WIRE=$WIREHTTPRC"
+LOGSTRING="$LOGSTRING|WIREEXTPORT=$WIREEXTPORT"
+LOGSTRING="$LOGSTRING|IMDS=$IMDSHTTPRC"
+LOGSTRING="$LOGSTRING|EXTN=$EXTENS"
+LOGSTRING="$LOGSTRING|AUTOUP=$AUTOUP"
+LOGSTRING="$LOGSTRING|FULLFS=$FULLFS"
 loggy $LOGSTRING
 
 # output our report to the 'console'
 echo -e "Distro Family:   $DISTRO"
 echo -e "Agent Service:   $SERVICE"
-echo -e "Agent status:    $(printColorCondition $UNITSTATRC $UNITSTAT)"
-echo -e "Unit file:       $UNITFILE"
-echo -e "Unit package:    $OWNER"
-echo -e "Repo for Unit:   $REPO"
+echo -e "- status:        $(printColorCondition $UNITSTATRC $UNITSTAT)"
+echo -e "- Unit file:     $UNITFILE"
+echo -e "- Unit package:  $OWNER"
+echo -e "- Repo for Unit: $REPO"
 echo -e "python path:     $PY"
-echo -e "python version:  $PYVERSION"
-echo -e "pythons present: $(printColorCondition $PYCOUNT $PYCOUNT 1)"
-echo -e "python package:  $PYOWNER"
-echo -e "python repo:     $PYREPO"
-echo -e "python mod req:  "$(printColorCondition "$PYREQ" "$PYREQ" "loaded")
-echo -e "python mod ala:  "$(printColorCondition "$PYALA" "$PYALA" "loaded")
+echo -e "- version:       $PYVERSION"
+echo -e "- package:       $PYOWNER"
+echo -e "- repo:          $PYREPO"
+echo -e "- mod reqests:   "$(printColorCondition "$PYREQ" "$PYREQ" "loaded")
+echo -e "- mod waagent:   "$(printColorCondition "$PYALA" "$PYALA" "loaded")
+echo -e "pythons present: "$(printColorCondition $PYCOUNT "$PYCOUNTSTAT" 1)
 echo -e "IMDS HTTP CODE:  $(printColorCondition $IMDSHTTPRC $IMDSHTTPRC 200)"
 echo -e "WIRE HTTP CODE:  $(printColorCondition $WIREHTTPRC $WIREHTTPRC 200)"
 echo -e "WIRE EXTN PORT:  "$(printColorCondition "$WIREEXTPORT" "$WIREEXTPORT" "open")
@@ -541,7 +555,17 @@ echo -e "Volumes >$FSFULLPCENT%:   "$(printColorCondition "$FULLFS" "$FULLFS" "n
 
 # refactoring this JSON posting to be minimal, for instances when python is unworkable, a short-circuit if you will
 #  in all other situations this base code will spawn a python script to take t/s further
-jsonPayloadEvent=$(cat <<EOF
+
+### This is where we diverge into the python sub-script.  Many checks can be moved into Python code once we have validated that the python 
+# environment isn't in a troubled state
+if [ $PYSTAT -gt 0 ]; then
+  # python is inconsistent, lets throw an error here and put out our basic summaries at this point.
+  # this is where all the 'old' final output will go once the py script is implented
+  loggy "Python checks failed quick-exiting with status"
+
+  # Since we're not getting into 'python', log telemetry now
+  # first set up the JSON to post
+  jsonPayloadEvent=$(cat <<EOF
 {
   "iKey": "${AI_INSTRUMENTATION_KEY}",
   "name": "${0}",
@@ -556,29 +580,48 @@ jsonPayloadEvent=$(cat <<EOF
         "os": "linux",
         "distro": "${DISTRO}",
         "logString": "${LOGSTRING}",
-        "checks": "\"{\"python\":\"$PY\",\"pycount\":\"$PYCOUNT\",\"PyVersion\":\"$PYVERSION\",\"WAAOwner\":\"$OWNER\",\"IMDSReturn\":\"$IMDSHTTPRC\",\"WireReturn\":\"$WIREHTTPRC\",\"WireExtn\":\"$WIREEXTPORT\",\"DiskSpace\":\"$FSFULLPCENT\"}\""
+        "checks": "\"{\"python\":\"$PY\",\"pycount\":\"$PYCOUNT\",\"PyVersion\":\"$PYVERSION\",\"WAAOwner\":\"$OWNER\",\"IMDSReturn\":\"$IMDSHTTPRC\",\"WireReturn\":\"$WIREHTTPRC\",\"WireExtn\":\"$WIREEXTPORT\",\"DiskSpace\":\"$FSFULLPCENT\"}\"",
+        "findings": "\"{\"python\":\"Inconsistent python environment, other checks may have been aborted\"}\""
       }
     }
   }
 }
 EOF
 )
-# ^^^ not happy with that really, the 'checks' ends up as a big string, instead of sub objects, but maybe AI has to be that way
-        #"checks": {\"distro\":\"${DISTRO}\",\"IMDSReturn\":\"${IMDSHTTPRC}\",\"WireReturn\":\"${WIREHTTPRC}\",\"WireExtn\":\"${WIREEXTPORT}\",\"DiskSpace\":\"${FSFULLPCENT}\"}
-CURLARGS="-i "
-# intentionally clearing the var, to save the old version for posterity
-CURLARGS=""
-if [ $DEBUG -gt 0 ]; then
-  # not sure what to do here
-  true
+  # ^^^ not happy with that really, the 'checks' ends up as a big string, instead of sub objects, but maybe AI has to be that way
+          #"checks": {\"distro\":\"${DISTRO}\",\"IMDSReturn\":\"${IMDSHTTPRC}\",\"WireReturn\":\"${WIREHTTPRC}\",\"WireExtn\":\"${WIREEXTPORT}\",\"DiskSpace\":\"${FSFULLPCENT}\"}
+  ## now get to posting the JSON
+  CURLARGS="-i "
+  # intentionally clearing the var, to save the old version for posterity
+  CURLARGS=""
+  if [ $DEBUG -gt 0 ]; then
+    # not sure if there's anything more 'debuggy' to do here, maybe be verbose about why we're here
+    true
+  else
+    CURLARGS="$CURLARGS --show-error --silent "
+  fi
+  echo "ARGS=:$CURLARGS"
+  loggy "not posting to AI because telemetry is in question, and script is still in dev"
+  #curl $CURLARGS -X POST "${AI_ENDPOINT}" -H "Content-Type: application/json" -d "${jsonPayloadEvent}"
+  #echo "----"
+  #echo $jsonPayloadEvent
+  #echo "----"
 else
-  CURLARGS="$CURLARGS --show-error --silent "
+  # We'll go call the python sub-script here, since we should be
+  #  able to at least 'function' in portable py code
+  loggy "Python seems sane, spawning VMassist.py"
+  loggy "--- just kidding, we'll spawn python once the script is at feature parity with this one"
+  # Call VMassist.py with args - 
+  # --bash="$LOGSTRING"
+  # -d $DEBUG
+  # -l $LOGFILE
+  # pseudocode:
+  # if [ !$TERM ] ; then
+  #   ARGS=$ARGS+" --noterm"
+  # fi
+  # ./VMassist.py $ARGS
+
+  loggy "VMassist.py exited"
 fi
-echo "ARGS=:$CURLARGS"
-loggy "not posting to AI"
-#curl $CURLARGS -X POST "${AI_ENDPOINT}" -H "Content-Type: application/json" -d "${jsonPayloadEvent}"
-#echo "----"
-#echo $jsonPayloadEvent
-#echo "----"
 
 loggy "$0 finished at $(date --rfc-3339=seconds)"
