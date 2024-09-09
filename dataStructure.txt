@@ -1,0 +1,30 @@
+bins:
+{'/usr/bin/openssl': {
+    'exe': '/usr/bin/openssl',
+    'pkg': 'openssl-1.1.1k-12.el8_9.x86_64',
+    'repo': '@System'
+    }
+}
+services:
+{'waagent.service': {
+    'config': 'enabled',
+    'path': '/usr/lib/systemd/system/waagent.service',
+    'pkg': 'WALinuxAgent-2.7.0.6-8.el8_8.noarch',
+    'repo': '@System',
+    'status': 'active(running)',
+    'svc': 'waagent.service'
+    }
+}
+findings:
+{'findingName': {
+    'description': 'What are we checking here, in english',
+    'status': 'value'
+    }
+}
+checks:
+{'checkName': {
+    'description': 'What are we checking here, in english',
+    'check': 'shortName',
+    'value': 200
+    },
+}

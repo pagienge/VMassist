@@ -15,6 +15,7 @@
 
 # defaults for the script structure
 DEBUG=0
+BASHREPORT=0  # should we show the report from this script, even if it would normally be suppressed?
 LOGDIR="/var/log/azure"
 LOGFILE="$LOGDIR/"$(basename $0)".log"
 FSFULLPCENT=90
@@ -40,13 +41,16 @@ UNITSTAT="undef"
 UNITSTATRC=0
 
 # process command-line switches
-while getopts ":hv" option; do
+while getopts ":hvb" option; do
    case $option in
       h) # display Help
         help
         exit;;
       v) # turn on verbose mode
         DEBUG=1
+        ;;
+      b)
+        BASHREPORT=1
         ;;
       \?) # Invalid option
         echo "Error: Invalid option"
@@ -84,10 +88,10 @@ import importlib
 def check_module(module_name):
   try:
     importlib.import_module(module_name)
-    print("The module '{}' exists."+format(module_name))
+    print(f"The module '{module_name}' exists.")
     return 0
   except ModuleNotFoundError:
-    print("Cannot load '{}'"+format(module_name))
+    print(f"Cannot load '{module_name}'")
     return 1
 exit (check_module("$2"))
 EOF
@@ -384,7 +388,7 @@ if [[ $PYCOUNT == 0 ]]; then
   DEREFPY=$(readlink -f /usr/bin/python3)
   if [[ $DEREFPY =~ "platform-python" ]]; then
     PYCOUNT=1
-    PYCOUNTSTAT="Python symlinked to platform-python"
+    PYCOUNTSTAT="python3 symlinked to platform-python"
     loggy "Alternative state for python3 - symlinked to $DEREFPY which is safe"
   else
     loggy "python status out of an expected state - manually investigate"
@@ -529,32 +533,35 @@ LOGSTRING="$LOGSTRING|AUTOUP=$AUTOUP"
 LOGSTRING="$LOGSTRING|FULLFS=$FULLFS"
 loggy $LOGSTRING
 
-# output our report to the 'console'
-echo -e "Distro Family:   $DISTRO"
-echo -e "Agent Service:   $SERVICE"
-echo -e "- status:        $(printColorCondition $UNITSTATRC $UNITSTAT)"
-echo -e "- Unit file:     $UNITFILE"
-echo -e "- Unit package:  $OWNER"
-echo -e "- Repo for Unit: $REPO"
-echo -e "python path:     $PY"
-echo -e "- version:       $PYVERSION"
-echo -e "- package:       $PYOWNER"
-echo -e "- repo:          $PYREPO"
-echo -e "- mod reqests:   "$(printColorCondition "$PYREQ" "$PYREQ" "loaded")
-echo -e "- mod waagent:   "$(printColorCondition "$PYALA" "$PYALA" "loaded")
-echo -e "pythons present: "$(printColorCondition $PYCOUNT "$PYCOUNTSTAT" 1)
-echo -e "IMDS HTTP CODE:  $(printColorCondition $IMDSHTTPRC $IMDSHTTPRC 200)"
-echo -e "WIRE HTTP CODE:  $(printColorCondition $WIREHTTPRC $WIREHTTPRC 200)"
-echo -e "WIRE EXTN PORT:  "$(printColorCondition "$WIREEXTPORT" "$WIREEXTPORT" "open")
-# these could either be 'yes|no' or 'true|false'... using the most common defaults for the 'good' string value
-echo -e "Extensions:      "$(printColorCondition $EXTENS "$EXTENSMSG" "true")
-echo -e "AutoUpgrade:     "$(printColorCondition $AUTOUP "$AUTOUPMSG" "true")
-# System checks
-echo -e "Volumes >$FSFULLPCENT%:   "$(printColorCondition "$FULLFS" "$FULLFS" "none")
-
+## output our report to the 'console' if in debug, we 'asked' for it by arg, 
+#  or if python is bad and we won't be running the python script
+if [ $DEBUG ] || [ $BASHREPORT ] || [$PYSTAT -gt 0 ] ; then
+  echo -e "Distro Family:   $DISTRO"
+  echo -e "Agent Service:   $SERVICE"
+  echo -e "- status:        $(printColorCondition $UNITSTATRC $UNITSTAT)"
+  echo -e "- Unit file:     $UNITFILE"
+  echo -e "- Unit package:  $OWNER"
+  echo -e "- Repo for Unit: $REPO"
+  echo -e "python path:     $PY"
+  echo -e "- version:       $PYVERSION"
+  echo -e "- package:       $PYOWNER"
+  echo -e "- repo:          $PYREPO"
+  echo -e "- mod reqests:   "$(printColorCondition "$PYREQ" "$PYREQ" "loaded")
+  echo -e "- mod waagent:   "$(printColorCondition "$PYALA" "$PYALA" "loaded")
+  echo -e "pythons present: "$(printColorCondition $PYCOUNT "$PYCOUNTSTAT" 1)
+  echo -e "IMDS HTTP CODE:  $(printColorCondition $IMDSHTTPRC $IMDSHTTPRC 200)"
+  echo -e "WIRE HTTP CODE:  $(printColorCondition $WIREHTTPRC $WIREHTTPRC 200)"
+  echo -e "WIRE EXTN PORT:  "$(printColorCondition "$WIREEXTPORT" "$WIREEXTPORT" "open")
+  # these could either be 'yes|no' or 'true|false'... using the most common defaults for the 'good' string value
+  echo -e "Extensions:      "$(printColorCondition $EXTENS "$EXTENSMSG" "true")
+  echo -e "AutoUpgrade:     "$(printColorCondition $AUTOUP "$AUTOUPMSG" "true")
+  # System checks
+  echo -e "Volumes >$FSFULLPCENT%:   "$(printColorCondition "$FULLFS" "$FULLFS" "none")
+  echo -e "Please see https://github.com/pagienge/VMassist/blob/main/docs/tux.md for information about any issues in the above output"
+fi
 
 # refactoring this JSON posting to be minimal, for instances when python is unworkable, a short-circuit if you will
-#  in all other situations this base code will spawn a python script to take t/s further
+#  in all other situations this base code will spawn a python script to take t/s further and post a more complete log to the AI workspace
 
 ### This is where we diverge into the python sub-script.  Many checks can be moved into Python code once we have validated that the python 
 # environment isn't in a troubled state
@@ -562,6 +569,8 @@ if [ $PYSTAT -gt 0 ]; then
   # python is inconsistent, lets throw an error here and put out our basic summaries at this point.
   # this is where all the 'old' final output will go once the py script is implented
   loggy "Python checks failed quick-exiting with status"
+  # Output the logging now, since the python execution will be skipped
+  echo "Something about the python waagent wants to call is broken:$PY See if it exists, or if it matches what this system should have in place from the distribution publisher"
 
   # Since we're not getting into 'python', log telemetry now
   # first set up the JSON to post
@@ -610,18 +619,49 @@ else
   # We'll go call the python sub-script here, since we should be
   #  able to at least 'function' in portable py code
   loggy "Python seems sane, spawning VMassist.py"
-  loggy "--- just kidding, we'll spawn python once the script is at feature parity with this one"
+  loggy "--- just kidding, we'll spawn python once the script is at feature parity, but until then you just get this cheeky message"
+  ARGS=""
   # Call VMassist.py with args - 
   # --bash="$LOGSTRING"
   # -d $DEBUG
   # -l $LOGFILE
   # pseudocode:
-  # if [ !$TERM ] ; then
-  #   ARGS=$ARGS+" --noterm"
-  # fi
-  # ./VMassist.py $ARGS
-
-  loggy "VMassist.py exited"
+  if [ $DEBUG -gt 0 ]; then
+    $ARGS="$ARGS --debug"
+  fi
+  BASHARGS="DISTRO=$DISTRO"
+  BASHARGS="$BASHARGS|SERVICE=$SERVICE"
+#  BASHARGS="$BASHARGS|SRVSTAT=$UNITSTAT"
+#  BASHARGS="$BASHARGS|SRVRC=$UNITSTATRC"
+  BASHARGS="$BASHARGS|UNIT=$UNITSTAT"
+#  BASHARGS="$BASHARGS|UNITPKG=$OWNER"
+#  BASHARGS="$BASHARGS|REPO=$REPO"
+  BASHARGS="$BASHARGS|PY=$PY"
+#  BASHARGS="$BASHARGS|PYVERS=$PYVERSION"
+#  BASHARGS="$BASHARGS|PYPKG=$PYOWNER"
+#  BASHARGS="$BASHARGS|PYREPO=$PYREPO"
+  BASHARGS="$BASHARGS|PYCOUNT=$PYCOUNT"
+  BASHARGS="$BASHARGS|PYREQ=$PYREQ"
+  BASHARGS="$BASHARGS|PYALA=$PYALA"
+#  BASHARGS="$BASHARGS|WIRE=$WIREHTTPRC"
+#  BASHARGS="$BASHARGS|WIREEXTPORT=$WIREEXTPORT"
+#  BASHARGS="$BASHARGS|IMDS=$IMDSHTTPRC"
+#  BASHARGS="$BASHARGS|EXTN=$EXTENS"
+#  BASHARGS="$BASHARGS|AUTOUP=$AUTOUP"
+#  BASHARGS="$BASHARGS|FULLFS=$FULLFS"
+  ARGS="$ARGS --bash=\"$BASHARGS\""
+  if [ !$TERM ] ; then
+    ARGS="$ARGS --noterm"
+  fi
+  # make sure the python subscript exists, for good measure
+  PYSCRIPT=$(dirname $0)"/VMassist.py"
+  if test -f $PYSCRIPT; then
+    loggy "running $PYSCRIPT with args $ARGS"
+    $PY $PYSCRIPT $ARGS
+    loggy "VMassist.py exited"
+  else
+    loggy "VMassist.py script not found at $PYSCRIPT!! Unable to spawn"
+  fi
 fi
 
 loggy "$0 finished at $(date --rfc-3339=seconds)"

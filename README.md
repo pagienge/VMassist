@@ -25,3 +25,10 @@ Syntax: VMassist.sh [-h|v]
 - options:
    -h     Print this Help.
    -v     Verbose mode.
+
+### Issues running VMassist
+#### Seems to hang forever
+There are conditions where the scripts may not produce output at all and seem to hang without causing system load.  This may be due to issues with the package management, specifically on newer VMs.  If this is encountered, run a package manager command from the command line and watch for prompts.  Examples:
+- dnf repolist
+- zypper ref
+- apt-get update
