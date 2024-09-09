@@ -1,7 +1,7 @@
 # Health check script for Azure Agent on Linux - waagent
 VMassist is a combination of bash and python scripts intended to be used to diagnose issues with the Azure agent in a Linux VM, and related issues with the general health of the VM.
 
-Running the VMassist.sh script will generate a serial-console-friendly summary of checks, as the intent is to identify common issues and present them in an easy-to-consume format given that troubleshooting is often done in the limited-size serial console  Further logging is done to /var/log/azure
+Output is intended to be viewed in the serial console and provide pointers to solve some well-known issues, as well as certain deviations from best practice which can affect VM availability.
 
 ## Prerequisites
 There are two components of the script
@@ -17,8 +17,8 @@ There are two components of the script
 - run `bootstrap-VMassist.sh` to get both scripts and place in a temporary location
 
 ### Running VMassist
-- neither of the 'download' procedures will automatically run the diagnostic script
-- Run the `VMassist.sh` from the path reported in the output of `bootstrap-VMassist.sh` as root, or through sudo
+- Running `bootstrap-VMassist.sh` will download and run the diagnostic script from `/tmp/VMassist`
+- After downloading by any method, run the `VMassist.sh` from the path reported in the output of `bootstrap-VMassist.sh` as root, or through sudo
 
 ### syntax
 Syntax: VMassist.sh [-h|v]
@@ -26,9 +26,14 @@ Syntax: VMassist.sh [-h|v]
    -h     Print this Help.
    -v     Verbose mode.
 
+### Analyzing output
+The output from the script should be a serial console friendly report of well known issues, along with a link to current documentation on both interpreting the output and references for fixing identified issues.
+
+Log output is created in `/var/log/azure`, using filenames staring with `VMassist`
+
 ### Issues running VMassist
 #### Seems to hang forever
-There are conditions where the scripts may not produce output at all and seem to hang without causing system load.  This may be due to issues with the package management, specifically on newer VMs.  If this is encountered, run a package manager command from the command line and watch for prompts.  Examples:
+There are conditions where the scripts may not produce output at all and seem to hang without causing system load.  This may be due to the underlying package manager expecting interaction from a prompt, specifically on newer VMs.  If this is encountered, run a package manager command from the command line and watch for prompts.  Examples:
 - dnf repolist
 - zypper ref
 - apt-get update
