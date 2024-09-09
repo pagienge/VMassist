@@ -13,8 +13,13 @@ There are two components of the script
 - run `bash <(curl -sL https://raw.githubusercontent.com/pagienge/walinuxagenthealth/main/bootstrap-VMassist.sh)`
 
 ### manual download
-- download the bootstrapping script - bootstrap-VMassist.sh
-- run `bootstrap-VMassist.sh` to get both scripts and place in a temporary location
+- download the two scripts individually to the current directory
+`wget https://github.com/pagienge/VMassist/raw/main/VMassist.sh`
+`wget https://github.com/pagienge/VMassist/raw/main/VMassist.py`
+- add executable permissions
+`chmod VMassist.sh`
+- Run the script
+`./VMassist.sh`
 
 ### Running VMassist
 - Running `bootstrap-VMassist.sh` will download and run the diagnostic script from `/tmp/VMassist`
