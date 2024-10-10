@@ -627,9 +627,9 @@ EOF
 else
   # We'll go call the python sub-script here, since we should be
   #  able to at least 'function' in portable py code
-  loggy "Python seems sane, spawning VMassist.py"
+  loggy "Python seems sane, spawning vmassist.py"
   ARGS=""
-  # Call VMassist.py with args - 
+  # Call vmassist.py with args - 
   # --bash="$LOGSTRING"
   # -d $DEBUG
   # -l $LOGFILE
@@ -665,16 +665,16 @@ else
     ARGS="$ARGS --noterm"
   fi
   # make sure the python subscript exists, for good measure
-  PYSCRIPT=$(dirname $0)"/VMassist.py"
+  PYSCRIPT=$(dirname $0)"/vmassist.py"
   if test -f $PYSCRIPT; then
     loggy "running $PYSCRIPT with args $ARGS"
 #    if [[ $DEBUG ]]; then
       echo "running # $PYSCRIPT $ARGS"
 #    fi
     $PY $PYSCRIPT $ARGS
-    loggy "VMassist.py exited"
+    loggy "vmssist.py exited"
   else
-    loggy "VMassist.py script not found at $PYSCRIPT!! Unable to spawn"
+    loggy "vmassist.py script not found at $PYSCRIPT!! Unable to spawn"
   fi
 fi
 

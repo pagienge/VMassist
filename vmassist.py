@@ -518,7 +518,7 @@ for m in mounts:
 # END ALL CHECKS
 
 # START OUTPUT
-print("------ VMassist.py results ------")
+print("------ vmassist.py results ------")
 print("Please see https://github.com/pagienge/VMassist/blob/main/docs/tux.md for information about any issues in the above output")
 print(f"OS family        : {osrID}")
 if 'none' in checks["fullFS"]:
@@ -559,7 +559,7 @@ logger.info(str(findings))
 #   print( "  config state   : "+colorString(services[svcName]['config'], redVal="disabled", greenVal="enabled"))
 # # END DEBUG
 
-print("------ END VMassist.py output ------")
+print("------ END vmassist.py output ------")
 #pprint(bins)
 logger.info("Python ended")
 #if ( args.debug ):
