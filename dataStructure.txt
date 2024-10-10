@@ -18,13 +18,15 @@ services:
 findings:
 {'findingName': {
     'description': 'What are we checking here, in english',
-    'status': 'value'
+    'status': 'error text, value,',
+    'type': 'What sort of finding is this? one of [service|bin|os|etc.], like in checks below'
     }
 }
 checks:
 {'checkName': {
     'description': 'What are we checking here, in english',
     'check': 'shortName',
-    'value': 200
+    'value': 200,
+    'type': 'What sort of check is this? one of [service|bin|os|etc.]'
     },
 }
