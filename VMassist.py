@@ -61,7 +61,7 @@ def cGreen(strIn): return colorPrint("\033[92m", strIn)
 def cYellow(strIn): return colorPrint("\033[93m", strIn)
 def cBlack(strIn): return colorPrint("\033[98m", strIn)
 def colorString(strIn, redVal="dead", greenVal="active", yellowVal="inactive"):
-  # ordered so that errors come first, then slowly fall through to "I guess it's OK"
+  # ordered so that errors come first, then warnings and eventually "I guess it's OK"
   if redVal.lower() in strIn.lower():
     return cRed(strIn)
   elif yellowVal.lower() in strIn.lower():
@@ -89,8 +89,8 @@ osrID=os_release.get("ID_LIKE", os_release.get("ID"))
 bins={}
 services={}
 checks={}
-# put some default findings in, delete them if we find something bad
-findings={'fullFS':{"none":f"No filesystems over {fullPercent}% util"}}
+findings={}
+# took out the part to put some default findings in, delete them if we find something bad
 
 #### END Global vars
 #### Main logic functions
@@ -143,8 +143,8 @@ def validateBin(binPathIn):
       try:
         # expand on this to make the call to 'dnf' do yum on old things, for old RH flavors, maybe
         dnfOut=subprocess.check_output("dnf info " + rpm, shell=True, stderr=subprocess.DEVNULL).decode().strip()
-        # Repo line should look like "Repository   : [reponame]" so clean it up
-        thisBin["repo"]=re.search("Repository.*",dnfOut).group().strip().split(":")[1].strip()
+        # Repo line should look like "From repo   : [reponame]" so clean it up
+        thisBin["repo"]=re.search("From repo.*",dnfOut).group().strip().split(":")[1].strip()
       except:
         # we didn't get a match, probably a manual install (rpm) or from source
         thisBin["repo"]="not from a repo"
@@ -193,7 +193,7 @@ def checkService(unitName, package=False):
   logger.info("Service/Unit check " + unitName)
 
   thisSvc={"svc":unitName}
-  unitStat=0   # default service status return, we'll set this based on the 'systemctl status' RC
+  unitStat=0          # default service status return, we'll set this based on the 'systemctl status' RC
   thisSvc["status"]="undef" # this will get changed somewhere
   # First off, let us check if the unit even exists
   try:
@@ -250,6 +250,7 @@ def checkService(unitName, package=False):
   logString = unitName + " unit file found at " + thisSvc["path"] + "owned by package '" + thisSvc["pkg"] + "from repo: " + thisSvc["repo"]
   logger.info(logString)
   services[unitName]=thisSvc
+  
 def checkHTTPURL(urlIn):
   checkURL = urlIn
   headers = {'Metadata': 'True'}
@@ -286,137 +287,289 @@ def isOpen(ip, port):
 
 #### START main processing flow
 
-# ToDo list:
-# >> LOGSTRING="DISTRO=$DISTRO"
+# ToDo list from bash logstring: (delete when completed)
 # LOGSTRING="$LOGSTRING|SERVICE=$SERVICE"
-# >> LOGSTRING="$LOGSTRING|SRVSTAT=$UNITSTAT"
-# >> LOGSTRING="$LOGSTRING|SRVRC=$UNITSTATRC"
-# >> LOGSTRING="$LOGSTRING|UNIT=$UNITSTAT"
-# >> LOGSTRING="$LOGSTRING|UNITPKG=$OWNER"
-# >> LOGSTRING="$LOGSTRING|REPO=$REPO"
 # LOGSTRING="$LOGSTRING|PY=$PY"
 # LOGSTRING="$LOGSTRING|PYVERS=$PYVERSION"
-# >> LOGSTRING="$LOGSTRING|PYPKG=$PYOWNER"
-# >> LOGSTRING="$LOGSTRING|PYREPO=$PYREPO"
 # LOGSTRING="$LOGSTRING|PYCOUNT=$PYCOUNT"
 # LOGSTRING="$LOGSTRING|PYREQ=$PYREQ"
 # LOGSTRING="$LOGSTRING|PYALA=$PYALA"
-# >> LOGSTRING="$LOGSTRING|WIRE=$WIREHTTPRC"
-# >> LOGSTRING="$LOGSTRING|WIREEXTPORT=$WIREEXTPORT"
-# >> LOGSTRING="$LOGSTRING|IMDS=$IMDSHTTPRC"
-# >> LOGSTRING="$LOGSTRING|EXTN=$EXTENS"
-# >> LOGSTRING="$LOGSTRING|AUTOUP=$AUTOUP"
-# >> LOGSTRING="$LOGSTRING|FULLFS=$FULLFS"
-
-#print(cGreen("Green"))
-#redText=cRed("red")
-#print("Red text is " + redText)
 
 logger.info("Python script started:"+os.path.basename(__file__))
 logger.info("args were "+str(parser.parse_args()))
 
 # We'll use the 'bash' arguments from the bash wrapper to seed this script
-waaServiceIn=bashArgs.get('SERVICE', "waagent.service")
+waaServiceIn=bashArgs.get('SERVICE', "waagent.service") # this may differ per-distro, but offer a default
 pythonIn=bashArgs.get('PY', "/usr/bin/python3")
+waaBin=subprocess.check_output("which waagent", shell=True, stderr=subprocess.DEVNULL).decode().strip()
+logger.info(f"using waagent location {waaBin}")
+
+# Check services and binaries
 
 checkService(waaServiceIn, package=True)
 validateBin(pythonIn)
-# Don't worry about this initially until we get to more 'best practice' checks
-#checkService("sshd.service", package=True)
-# PoC for right now to show what we can do, also 'best practice'
+# PoC for right now to show what we can do, also because changing SSL can cause problems for some extensions
 validateBin("/usr/bin/openssl")
+validateBin(waaBin) # just to create another easy-to-check test
+# Don't worry about SSHD initially until we get to more 'best practice' checks
+#checkService("sshd.service", package=True)
+
+## turn service/bins checks into 'checks' and 'findings'
+### Binaries
+#### string for the console report
+binReportString=""
+for binName in bins:
+  checks[bins[binName]['exe']] = {'check': bins[binName]['exe'],
+                                  'description': f"Binary check of {bins[binName]['exe']}",
+                                  'value': f"Package:{bins[binName]['pkg']}, source:{bins[binName]['repo']}"
+                                  }
+  # check for alarms in the binaries and create findings as needed
+  # - is the path include questionable areas - local, home, opt - these aren't "normal"
+  if ( re.search(r"local", bins[binName]['exe']) or 
+       re.search(r"opt", bins[binName]['exe']) or
+       re.search(r"home", bins[binName]['exe'])):
+    # this is bad, create a findings from this check
+    findings[f"bp:{bins[binName]['exe']}"]={
+      'description': f"binpath:{bins[binName]['exe']}",
+      'status': "Path includes questionable directories",
+      'type': "bin"
+    }
+    logger.warn(f"Checking path of {bins[binName]['exe']} found in a non-standard location")
+    binReportString+=f"{cYellow(bins[binName]['exe'])} => check location\n"
+  # - is the repository uncommon
+  repoBad=False
+  if osrID == "debian":
+    # check if the repository is expected, this should usually say "Origin: Ubuntu"
+    if ( not re.search(r"Origin: Ubuntu", bins[binName]['repo'])):
+      repoBad=True
+  elif ( osrID == "fedora" or osrID == "azurelinux" ) : 
+    # check if the repository is either @System (initial install for RHEL or AL) or includes 'rhui' or 'azurelinux'
+    if ( not (re.search(r"@System", bins[binName]['repo']) or 
+              re.search(r"anaconda", bins[binName]['repo']) or
+              re.search(r"rhui", bins[binName]['repo']) or
+              re.search(r"azurelinux", bins[binName]['repo'])
+             )):
+      repoBad=True
+  elif osrID == "suse":
+    # check if the repository includes 'SLE-Module' or 'SUSE'
+    if ( not re.search(r"SLE-Module", bins[binName]['repo'])):
+      repoBad=True
+  # all distro-specific checks finished, report if needed
+  if ( repoBad ):
+    findings[f"bs:{bins[binName]['exe']}"]={
+      'description': f"binsource:{bins[binName]['exe']}",
+      'status': f"Binary came from unusual source: {bins[binName]['repo']}",
+      'type': "bin"
+    }
+    logger.warn(f"Checking {bins[binName]['exe']} found sourced from the repo {bins[binName]['repo']}")
+    binReportString+=f"{bins[binName]['exe']} => {cRed(bins[binName]['repo'])} - verify repository\n"
+if (len(binReportString) == 0 ):
+  binReportString=cGreen("No issues with checked binaries")
+### Services/Units
+svcReportString=""
+for svcName in services:
+  if ( not re.search(r"running", services[svcName]['status']) ):
+    findings[f"ss:{services[svcName]['svc']}"]={
+      'description': f"service:{services[svcName]['svc']}",
+      'status': f"Service not in 'running' state: {services[svcName]['status']}",
+      'type': "svc"
+    }
+    logger.warn(f"Checking {services[svcName]['svc']} found in state {services[svcName]['status']}")
+    svcReportString+=f"{services[svcName]['svc']} => {cRed(services[svcName]['status'])} - check logs\n"
+  if ( not re.search(r"enabled", services[svcName]['config']) ):
+    findings[f"sc:{services[svcName]['svc']}"]={
+      'description': f"service:{services[svcName]['svc']}",
+      'status': f"Service not enabled: {services[svcName]['config']}",
+      'type': "svc"
+    }
+    logger.warn(f"Checking {services[svcName]['svc']} not enabled: {services[svcName]['config']}")
+    svcReportString+=f"{services[svcName]['svc']} => {cRed(services[svcName]['config'])} - check config\n"
+if (len(svcReportString) == 0 ):
+  svcReportString=cGreen("No issues with checked services")
+
+  # print(f"Analysis of unit : {services[svcName]['svc']}:")
+  # print(f"  Owning pkg     : {services[svcName]['pkg']}" )
+  # print(f"  Repo for pkg   : {services[svcName]['repo']}" )
+  # print( "  run state      : "+colorString(services[svcName]['status'], redVal="dead", greenVal="active"))
+  # print( "  config state   : "+colorString(services[svcName]['config'], redVal="disabled", greenVal="enabled"))
+
 
 # Connectivity checks
 ## Wire server
 wireCheck=checkHTTPURL("http://168.63.129.16/?comp=versions")
 thisCheck={"check":"wire 80", "value":wireCheck}
 checks['wire']=thisCheck
+if wireCheck != 200:
+  findings['wire80']={
+    'description': 'WireServer:80',
+    'status': wireCheck,
+    'type': "conn"
+  }
+# clean up, this shouldn't remove the 'checks' reference, just the temp object
 del(thisCheck)
-## Wire server "other" port
-thisCheck={"check":"wire 23526", "value":isOpen("168.63.129.16",32526)}
+## Wire server "extension" port
+wireExt=isOpen("168.63.129.16",32526)
+thisCheck={"check":"wire 23526", "value":wireExt}
 checks['wireExt']=thisCheck
+if not wireExt :
+  findings['wire23526']={
+    'description': 'WireServer:32526',
+    'status': wireExt,
+    'type': "conn"
+  }
+# clean up, this shouldn't remove the 'checks' reference, just the temp object
 del(thisCheck)
 ## IMDS
 imdsCheck=checkHTTPURL("http://169.254.169.254/metadata/instance?api-version=2021-02-01")
 thisCheck={"check":"imds 443", "value":imdsCheck}
 checks['imds']=thisCheck
+if imdsCheck != 200:
+  findings['imds']={
+    'description': 'IMDS',
+    'status': imdsCheck,
+    'type': "conn"
+  }
+# clean up, this shouldn't remove the 'checks' reference, just the temp object
 del(thisCheck)
 
 # OS checks
 ## Agent config
-waaConfigOut=subprocess.check_output("/usr/sbin/waagent --show-configuration", shell=True, stderr=subprocess.DEVNULL).decode().strip().split('\n')
+waaConfigOut=subprocess.check_output(f"{waaBin} --show-configuration", shell=True, stderr=subprocess.DEVNULL).decode().strip().split('\n')
 waaConfig={}
 # put all output from the config command into a KVP
 for line in waaConfigOut:
   key, value = line.split('=', 1)
   waaConfig[key.strip()] = value.strip()
-checks['waaExt']={"check":"WAA Extension", "value":waaConfig['AutoUpdate.Enabled']}
+checks['waaExt']={"check":"WAA Extension", "value":waaConfig['Extensions.Enabled']}
 if ( checks['waaExt']['value'] != 'True' ):
   findings['waaExt']={'status': checks['waaExt']['value'], 'description':"Extensions are disabled in WAA config"}
-checks['waaUpg']={"check":"WAA AutoUpgrade", "value":waaConfig['Extensions.Enabled']}
+checks['waaUpg']={"check":"WAA AutoUpgrade", "value":waaConfig['AutoUpdate.Enabled']}
 if ( checks['waaUpg']['value'] != 'True' ):
   findings['waaUpg']={'status': checks['waaUpg']['value'], 'description':"Agent extension handler auto-upgrade is disabled in WAA config"}
 
-## disk space
+# Checks against disks and objects
+## results of disk space checks
+### seed checks with a 'no problems' message, we'll reset it when we find one
+checks['fullFS']={"check":"fullFS", "description": f"filesystem util over {fullPercent}%", "none":f"No filesystems over {fullPercent}% util"}
 diskFind=""
-try:
-  import psutil
-except:
-    # probably couldn't find the psutil module (probably SLES), use the sh derived/passed value instead
-    # and default to the 'error text' if it wasn't passed
-    diskFind=bashArgs.get('FULLFS', "Could not test, no psutil module available")
-    #diskFind="Could not test, no psutil module available"
-else:
-  mounts = psutil.disk_partitions()
-  for m in mounts:
-    # only check --type ext4 --type xfs --type vfat --type btrfs --type ext3
-    if m.fstype == "ext3" or m.fstype == "ext4" or m.fstype == "vfat" or m.fstype == "xfs" or m.fstype == "btrfs":
-      pcent = psutil.disk_usage(m.mountpoint).percent
-      if pcent >= fullPercent:
-        thisDisk = {"mount":m.mountpoint, "util":pcent}
-        findings['fullFS'][m.mountpoint]=thisDisk
-        if 'none' in findings["fullFS"]:
-          del findings['fullFS']["none"]
-  # This could move inside the above loop, or go down in the 'output' section, written as standalone processing of the finding obj for now
-  for find in findings["fullFS"]:
-    if len(diskFind) > 2:
-      diskFind = f"{diskFind}, "
-    diskFind=f"{diskFind}{findings['fullFS'][find]['mount']}:{str(findings['fullFS'][find]['util'])}%"
+## find the device 'id' for checking if the extension directory is 'noexec'
+vlwaDev=os.stat("/var/lib/waagent").st_dev
+
+mounts=[]
+
+# only check these filesystem types ext4,xfs,vfat,btrfs,ext3
+findmnt=subprocess.check_output("findmnt --evaluate -nb -o TARGET,SOURCE,FSTYPE,OPTIONS,USE% --pairs -t=ext2,ext3,ext4,btrfs,xfs,vfat", shell=True, stderr=subprocess.DEVNULL).decode().strip().split("\n")
+
+for fm in findmnt:
+  pairs = fm.split()
+  dictTemp={}
+  for pair in pairs:
+    key, value = pair.split('=',1)
+    dictTemp[key] = value.strip('"%')
+  mounts.append(dictTemp)
+
+# this was initially done in psutils:
+#  mounts = psutil.disk_partitions()
+#  but was found that certain distros do not include psutils in their marketplace images, so re-wrote with generic python code
+for m in mounts:
+  logger.info(f"Checking {m['SOURCE']} mounted at {m['TARGET']}")
+  # the following hack brought to you by SLES, where USE% is instead USE_PCT
+  pcent=0
+  if ( 'USE%' in m ):
+    pcent = m['USE%']
+  elif ( 'USE_PCT' in m ):
+    pcent = m['USE_PCT']
+
+  if int(pcent) >= fullPercent:
+    logger.warning(f"Filesystem utilization for {m['TARGET']} is over {fullPercent}: {pcent}")
+    # delete the 'default empty set' wording in 'checks' for fullFS, because we found a disk over the util threshold
+    if 'none' in checks["fullFS"]:
+      checks['fullFS']={'check': 'fullFS', 'description':f'Look for filesystems utilized more than {fullPercent}','value':'see findings for details'}
+      findings['fullFS']={}
+    if 'status' in findings['fullFS']:
+      findings['fullFS']['status'] = f"{findings['fullFS']['status']}, {m['TARGET']}:{pcent}"
+    else:
+      findings['fullFS']={'description': f"Filesystems over{fullPercent}",
+                           'status': f"{m['TARGET']}:{pcent}",
+                           'type':'os'
+      }
+  # check if this mount (m) is the one holding /var/lib/waagent, if so we will  want to check to see if the mount options include 'noexec'
+  if ( os.stat(m['TARGET']).st_dev == vlwaDev ):
+    logger.info(f"Found /var/lib/waagent based in filesystem {m['TARGET']} on device {m['SOURCE']}, checking mount options")
+    # create the 'checks' data describing this
+    checks['noexec']={
+      'description': f"Checking mount options for noexec on {m['SOURCE']}",
+      'check': 'noexec',
+      'value': m['TARGET']
+    }
+    # add the 'findings' data if it's bad
+    if (re.search("noexec", m['OPTIONS'])):
+      # Found noexec so flag it
+      logger.error(f"mountpoint {m['TARGET']} mounted with 'noexec'")
+      findings['noexec']={
+        'description':"Found /var/lib/waagent with noexec bit set",
+        'status':True
+      }
 
 ## Networking
-### static IP
-### MAC mismatch
+### TODO: static IP
+### TODO: MAC mismatch
 
-print("------ VMassist.py results ------")
+# END ALL CHECKS
+
+# START OUTPUT
+print("------ vmassist.py results ------")
 print("Please see https://github.com/pagienge/VMassist/blob/main/docs/tux.md for information about any issues in the above output")
 print(f"OS family        : {osrID}")
-for binName in bins:
-  print(f"Analysis of      : {bins[binName]['exe']}:")
-  print(f"  Owning pkg     : {bins[binName]['pkg']}" )
-  print(f"  Repo for pkg   : {bins[binName]['repo']}" )
-for svcName in services:
-  print(f"Analysis of unit : {services[svcName]['svc']}:")
-  print(f"  Owning pkg     : {services[svcName]['pkg']}" )
-  print(f"  Repo for pkg   : {services[svcName]['repo']}" )
-  print( "  run state      : "+colorString(services[svcName]['status'], redVal="dead", greenVal="active"))
-  print( "  config state   : "+colorString(services[svcName]['config'], redVal="disabled", greenVal="enabled"))
+if 'none' in checks["fullFS"]:
+  print(f"Disk util > {fullPercent}%  : {checks['fullFS']['none']}")
+else:
+  print(f"Disk util > {fullPercent}%  : {findings['fullFS']['status']}")
+# TODO: clean up and verify color on all core checks - wire server, waagent status
+# Output the pre-determined binary findings
+print("Binary check results:")
+print(binReportString)
+print("Service check results:")
+print(svcReportString)
 
-print(f"Disk util > {fullPercent}%  : {diskFind}")
+### Log the data - don't send to the console
+logger.info("Binary check data structure:")
+logger.info(str(bins))
+logger.info("Service checks data structure:")
+logger.info(str(services))
+logger.info("All \"checks\" data structure:")
+logger.info(str(checks))
+logger.info("All \"findings\" data structure:")
+logger.info(str(findings))
+# TODO: optionally output all 'checks' objects
 
+# # DEBUG STUFF
+# # semi-debug, looks good for now until we get the checks and findings presentation built up
+# for binName in bins:
+#   print(f"Analysis of      : {bins[binName]['exe']}:")
+#   print(f"  Owning pkg     : {bins[binName]['pkg']}" )
+#   print(f"  Repo for pkg   : {bins[binName]['repo']}" )
+# for svcName in services:
+#   print(f"Analysis of unit : {services[svcName]['svc']}:")
+#   print(f"  Owning pkg     : {services[svcName]['pkg']}" )
+#   print(f"  Repo for pkg   : {services[svcName]['repo']}" )
+#   print( "  run state      : "+colorString(services[svcName]['status'], redVal="dead", greenVal="active"))
+#   print( "  config state   : "+colorString(services[svcName]['config'], redVal="disabled", greenVal="enabled"))
+# # END DEBUG
 
-print("------ END VMassist.py output ------")
+print("------ END vmassist.py output ------")
 #pprint(bins)
 logger.info("Python ended")
 #if ( args.debug ):
-print("------------ DATA STRUCTURE DUMP ------------")
-print("bins")
-pprint(bins)
-print("services")
-pprint(services)
-print("findings")
-pprint(findings)
-print("checks")
-pprint(checks)
-print("args")
-pprint(args)
-print("---------- END DATA STRUCTURE DUMP ----------")
+# print("------------ DATA STRUCTURE DUMP ------------")
+# print("bins")
+# pprint(bins)
+# print("services")
+# pprint(services)
+# print("findings")
+# pprint(findings)
+# print("checks")
+# pprint(checks)
+# print("args")
+# pprint(args)
+# print("---------- END DATA STRUCTURE DUMP ----------")

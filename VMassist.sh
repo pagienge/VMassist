@@ -14,8 +14,8 @@
 # - any other legalise
 
 # defaults for the script structure
-DEBUG=0
-BASHREPORT=0  # should we show the report from this script, even if it would normally be suppressed?
+DEBUG=""
+BASHREPORT=""  # should we show the report from this script, even if it would normally be suppressed?
 LOGDIR="/var/log/azure"
 LOGFILE="$LOGDIR/"$(basename $0)".log"
 FSFULLPCENT=90
@@ -27,7 +27,7 @@ AI_INSTRUMENTATION_KEY="8491943e-98da-4d75-b5b1-de88a6203eb5"
 AI_ENDPOINT="https://dc.services.visualstudio.com/v2/track"
 
 
-# variable defaults for derived values
+# logical variable defaults for values to be derived later
 source /etc/os-release
 DISTRO="hm-linux"
 PY="/usr/bin/python3"
@@ -64,7 +64,7 @@ function loggy {
   # simple logging handler
   # - writes output to the defined log file
   # - outputs to console if 'verbose' requested
-  if [ $DEBUG -gt 0 ]; then
+  if [[ $DEBUG ]]; then
     echo "$1"
   fi
   echo "$(date +%FT%T%z)  $1" >> $LOGFILE
@@ -224,15 +224,20 @@ fi
 UNITFILE=$(systemctl show $SERVICE -p FragmentPath | cut -d= -f2)
 if [[ $UNITFILE ]]; then
   loggy "Agent systemd unit located at $UNITFILE"
-  if [[ $DISTRO == "debian" ]]; then
+  if [ "$(readlink -f $UNITFILE)" = "/dev/null" ]; then
+    # sort of short-circuit the package check inf you got here, this is a masked unit and a lot of failures will happen
+    OWNER="masked"
+    REPO="masked"
+  elif [[ $DISTRO == "debian" ]]; then
     OWNER=$($PKG -S $UNITFILE 2> /dev/null | cut -d: -f1)
     # throw away the warning about apt not being a stable interface
     REPO=$(apt list --installed 2> /dev/null| grep $OWNER)
   elif [[ $DISTRO == "suse" ]]; then
     OWNER=$($PKG -q --whatprovides $UNITFILE 2> /dev/null | cut -d: -f1)
     REPO=$(zypper --quiet -s 11 se -i -t package -s $OWNER | grep "^i" | awk '{print $6}')
-  elif [[ $DISTRO == "mariner" ]]; then
+  elif [[ $DISTRO == "azurelinux" ]]; then
     OWNER=$($PKG -q --whatprovides $UNITFILE | cut -d: -f1)
+    REPO=$($DNF info  $OWNER 2>/dev/null | grep -i "Repository" | tr -d '[:blank:]'| cut -d: -f2)
   else
     # works for RHEL, suse WIP
     # Mariner does something different for the 'from repo' part
@@ -255,9 +260,10 @@ if [[ $UNITFILE ]]; then
     WAPATH=$(systemctl show $SERVICE -q -p ExecStart | tr " " "\n" | grep waagent | cut -d "=" -f 2 | uniq)
     
     if [ -z ${WAPATH} ] ; then
-      # this shouldn't be a valid codepath since waagent wasn't found, and PYPATH comes from the same unit providing WAPATH
-      # no agent found, maybe alter a 'failure' variable for later
-      false
+      # this shouldn't be a valid codepath since examining waagent didn't lead a python path
+      # but you CAN get here if the service is masked
+      loggy "High probability of a masked agent"
+      PYSTAT=$PYSTAT+8
     else
       # go search the waagent executable (which is a script) for the python package it will call
       # the first line of the waagent "binary" will be the path to whatever python it uses
@@ -337,13 +343,16 @@ if [[ $PYPATH ]]; then
   elif [[ $DISTRO == "suse" ]]; then
     PYOWNER=$($PKG -q --whatprovides $PYPATH | cut -d: -f1)
     PYREPO=$(zypper --quiet -s 11 se -i -t package -s $PYOWNER | grep "^i" | awk '{print $6}')
+  elif [[ $DISTRO == "azurelinux" ]]; then
+    PYOWNER=$($PKG -q --whatprovides $PYPATH | cut -d: -f1)
+    PYREPO=$($DNF info  $PYOWNER 2>/dev/null | grep -i "Repository" | tr -d '[:blank:]'| cut -d: -f2)
   else
-    # works for RHEL, Mariner does something different for the 'from repo' part, so we'll just act like it's RH for now
+    # Maybe everything else is RHEL(like)
     PYOWNER=$($PKG -q --whatprovides $PYPATH | cut -d: -f1)
     PYREPO=$($DNF info  $PYOWNER 2>/dev/null | grep -i "From repo" | tr -d '[:blank:]'| cut -d: -f2)
   fi
 else
-  PYOWNER="python defintion undef - is waagent here?"
+  PYOWNER="python defintion undef or defaulted - is waagent here?"
   PYREPO="n/a"
 fi
 loggy "Python owning package : $PYOWNER"
@@ -535,7 +544,7 @@ loggy $LOGSTRING
 
 ## output our report to the 'console' if in debug, we 'asked' for it by arg, 
 #  or if python is bad and we won't be running the python script
-if [ $DEBUG ] || [ $BASHREPORT ] || [$PYSTAT -gt 0 ] ; then
+if [[ $DEBUG ]] || [[ $BASHREPORT ]] || [[ $PYSTAT -gt 0 ]] ; then
   echo -e "Distro Family:   $DISTRO"
   echo -e "Agent Service:   $SERVICE"
   echo -e "- status:        $(printColorCondition $UNITSTATRC $UNITSTAT)"
@@ -568,9 +577,9 @@ fi
 if [ $PYSTAT -gt 0 ]; then
   # python is inconsistent, lets throw an error here and put out our basic summaries at this point.
   # this is where all the 'old' final output will go once the py script is implented
-  loggy "Python checks failed quick-exiting with status"
+  loggy "Python checks failed quick-exiting with python status $PYSTAT"
   # Output the logging now, since the python execution will be skipped
-  echo "Something about the python waagent wants to call is broken:$PY See if it exists, or if it matches what this system should have in place from the distribution publisher"
+  echo "Something about the python waagent wants to call ($PY) is broken: See if it exists, is part of the distro, or if there was a critical error with waagent.  PYSTAT=$PYSTAT"
 
   # Since we're not getting into 'python', log telemetry now
   # first set up the JSON to post
@@ -603,7 +612,7 @@ EOF
   CURLARGS="-i "
   # intentionally clearing the var, to save the old version for posterity
   CURLARGS=""
-  if [ $DEBUG -gt 0 ]; then
+  if [[ $DEBUG ]]; then
     # not sure if there's anything more 'debuggy' to do here, maybe be verbose about why we're here
     true
   else
@@ -618,15 +627,14 @@ EOF
 else
   # We'll go call the python sub-script here, since we should be
   #  able to at least 'function' in portable py code
-  loggy "Python seems sane, spawning VMassist.py"
-  loggy "--- just kidding, we'll spawn python once the script is at feature parity, but until then you just get this cheeky message"
+  loggy "Python seems sane, spawning vmassist.py"
   ARGS=""
-  # Call VMassist.py with args - 
+  # Call vmassist.py with args - 
   # --bash="$LOGSTRING"
   # -d $DEBUG
   # -l $LOGFILE
   # pseudocode:
-  if [ $DEBUG -gt 0 ]; then
+  if [[ $DEBUG ]]; then
     $ARGS="$ARGS --debug"
   fi
   BASHARGS="DISTRO=$DISTRO"
@@ -650,17 +658,23 @@ else
 #  BASHARGS="$BASHARGS|AUTOUP=$AUTOUP"
 #  BASHARGS="$BASHARGS|FULLFS=$FULLFS"
   ARGS="$ARGS --bash=\"$BASHARGS\""
-  if [ !$TERM ] ; then
+  if [[ $TERM ]] ; then
+    true
+    # do nothing... this should be handled better but !$TERM seems to always be false so we never get colors
+  else
     ARGS="$ARGS --noterm"
   fi
   # make sure the python subscript exists, for good measure
-  PYSCRIPT=$(dirname $0)"/VMassist.py"
+  PYSCRIPT=$(dirname $0)"/vmassist.py"
   if test -f $PYSCRIPT; then
     loggy "running $PYSCRIPT with args $ARGS"
+#    if [[ $DEBUG ]]; then
+      echo "running # $PYSCRIPT $ARGS"
+#    fi
     $PY $PYSCRIPT $ARGS
-    loggy "VMassist.py exited"
+    loggy "vmassist.py exited"
   else
-    loggy "VMassist.py script not found at $PYSCRIPT!! Unable to spawn"
+    loggy "vmassist.py script not found at $PYSCRIPT!! Unable to spawn"
   fi
 fi
 
