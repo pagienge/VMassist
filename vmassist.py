@@ -1,5 +1,3 @@
-print("Notice:: This python script is in heavy development\n")
-
 import argparse
 import os
 import sys
