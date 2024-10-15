@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 CONTINUE='no eula'
-DLPATH="/tmp/VMassist"
+DLPATH="/tmp/vmassist"
 
 
 if [ -f /tmp/vmassisteula ]; then 
@@ -52,16 +52,16 @@ if [ "$CONTINUE" = 'y' -o "$CONTINUE" = 'Y' ] ; then
     mkdir $DLPATH
   else
     # since the download dir exists, lets clear out any old copies of the scripts
-    rm -v $DLPATH/VMassist.sh
-    rm -v $DLPATH/VMassist.py
+    rm -v $DLPATH/vmassist.sh
+    rm -v $DLPATH/vmassist.py
   fi
 
   echo "downloading script(s)"
-  wget --no-verbose --directory-prefix=$DLPATH https://raw.githubusercontent.com/pagienge/walinuxagenthealth/main/VMassist.sh
-  chmod +x $DLPATH/VMassist.sh
-  wget --no-verbose --directory-prefix=$DLPATH https://raw.githubusercontent.com/pagienge/walinuxagenthealth/main/VMassist.py
+  wget --no-verbose --directory-prefix=$DLPATH https://raw.githubusercontent.com/pagienge/walinuxagenthealth/main/vmassist.sh
+  chmod +x $DLPATH/vmassist.sh
+  wget --no-verbose --directory-prefix=$DLPATH https://raw.githubusercontent.com/pagienge/walinuxagenthealth/main/vmassist.py
 
-  SCRIPTTORUN="$DLPATH/VMassist.sh"
+  SCRIPTTORUN="$DLPATH/vmassist.sh"
   if [ $EUID -gt 0 ] ; then
     echo "Not logged in as root, some checks require root privileges to run successfully so will utilize sudo"
     SCRIPTTORUN="sudo $SCRIPTTORUN"

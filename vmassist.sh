@@ -3,14 +3,16 @@
 #  support personnel or system administrators to identify commonly identified issues
 #  causing 'agent not ready' situations.
 # Usage
-#  Syntax: $0 [-h|-v]"
+#  Syntax: $0 [-h|-v]
 #    options:"
-#      -h     Print this Help."
-#      -v     Verbose mode."
+#      -h     Print this Help.
+#      -v     Verbose mode, up to -vvv.
+#      -r     Always show the 'bash' report when spawning the python script
 #
 # Need 
 # - license statement
 # - disclaimers
+# - eula
 # - any other legalise
 
 # defaults for the script structure
@@ -18,8 +20,7 @@ DEBUG=""
 BASHREPORT=""  # should we show the report from this script, even if it would normally be suppressed?
 LOGDIR="/var/log/azure"
 LOGFILE="$LOGDIR/"$(basename $0)".log"
-FSFULLPCENT=90
-FSFULLPCENT=10 # arbitrarily low testing value.  Release should set this to 90 or more
+FSFULLPCENT=80
 STARTTIME=$(date --rfc-3339=seconds)
 
 # Telemetry
@@ -41,15 +42,15 @@ UNITSTAT="undef"
 UNITSTATRC=0
 
 # process command-line switches
-while getopts ":hvb" option; do
+while getopts ":hvr" option; do
    case $option in
       h) # display Help
-        help
+        echo "help would go here"
         exit;;
       v) # turn on verbose mode
-        DEBUG=1
+        DEBUG=$(($DEBUG+1))
         ;;
-      b)
+      r)
         BASHREPORT=1
         ;;
       \?) # Invalid option
@@ -239,7 +240,6 @@ if [[ $UNITFILE ]]; then
     OWNER=$($PKG -q --whatprovides $UNITFILE | cut -d: -f1)
     REPO=$($DNF info  $OWNER 2>/dev/null | grep -i "Repository" | tr -d '[:blank:]'| cut -d: -f2)
   else
-    # works for RHEL, suse WIP
     # Mariner does something different for the 'from repo' part
     OWNER=$($PKG -q --whatprovides $UNITFILE | cut -d: -f1)
     REPO=$($DNF info  $OWNER 2>/dev/null | grep -i "From repo" | tr -d '[:blank:]'| cut -d: -f2)
@@ -580,63 +580,16 @@ if [ $PYSTAT -gt 0 ]; then
   loggy "Python checks failed quick-exiting with python status $PYSTAT"
   # Output the logging now, since the python execution will be skipped
   echo "Something about the python waagent wants to call ($PY) is broken: See if it exists, is part of the distro, or if there was a critical error with waagent.  PYSTAT=$PYSTAT"
-
-  # Since we're not getting into 'python', log telemetry now
-  # first set up the JSON to post
-  jsonPayloadEvent=$(cat <<EOF
-{
-  "iKey": "${AI_INSTRUMENTATION_KEY}",
-  "name": "${0}",
-  "time": "${STARTTIME}",
-  "data": {
-    "baseType": "EventData",
-    "baseData": {
-      "ver": 2,
-      "name": "${0} post test",
-      "properties": {
-        "vm": "$(hostname)",
-        "os": "linux",
-        "distro": "${DISTRO}",
-        "logString": "${LOGSTRING}",
-        "checks": "\"{\"python\":\"$PY\",\"pycount\":\"$PYCOUNT\",\"PyVersion\":\"$PYVERSION\",\"WAAOwner\":\"$OWNER\",\"IMDSReturn\":\"$IMDSHTTPRC\",\"WireReturn\":\"$WIREHTTPRC\",\"WireExtn\":\"$WIREEXTPORT\",\"DiskSpace\":\"$FSFULLPCENT\"}\"",
-        "findings": "\"{\"python\":\"Inconsistent python environment, other checks may have been aborted\"}\""
-      }
-    }
-  }
-}
-EOF
-)
-  # ^^^ not happy with that really, the 'checks' ends up as a big string, instead of sub objects, but maybe AI has to be that way
-          #"checks": {\"distro\":\"${DISTRO}\",\"IMDSReturn\":\"${IMDSHTTPRC}\",\"WireReturn\":\"${WIREHTTPRC}\",\"WireExtn\":\"${WIREEXTPORT}\",\"DiskSpace\":\"${FSFULLPCENT}\"}
-  ## now get to posting the JSON
-  CURLARGS="-i "
-  # intentionally clearing the var, to save the old version for posterity
-  CURLARGS=""
-  if [[ $DEBUG ]]; then
-    # not sure if there's anything more 'debuggy' to do here, maybe be verbose about why we're here
-    true
-  else
-    CURLARGS="$CURLARGS --show-error --silent "
-  fi
-  echo "ARGS=:$CURLARGS"
-  loggy "not posting to AI because telemetry is in question, and script is still in dev"
-  #curl $CURLARGS -X POST "${AI_ENDPOINT}" -H "Content-Type: application/json" -d "${jsonPayloadEvent}"
-  #echo "----"
-  #echo $jsonPayloadEvent
-  #echo "----"
 else
   # We'll go call the python sub-script here, since we should be
   #  able to at least 'function' in portable py code
   loggy "Python seems sane, spawning vmassist.py"
-  ARGS=""
+  ARGS="$@ "
   # Call vmassist.py with args - 
   # --bash="$LOGSTRING"
   # -d $DEBUG
   # -l $LOGFILE
   # pseudocode:
-  if [[ $DEBUG ]]; then
-    $ARGS="$ARGS --debug"
-  fi
   BASHARGS="DISTRO=$DISTRO"
   BASHARGS="$BASHARGS|SERVICE=$SERVICE"
 #  BASHARGS="$BASHARGS|SRVSTAT=$UNITSTAT"
@@ -657,7 +610,7 @@ else
 #  BASHARGS="$BASHARGS|EXTN=$EXTENS"
 #  BASHARGS="$BASHARGS|AUTOUP=$AUTOUP"
 #  BASHARGS="$BASHARGS|FULLFS=$FULLFS"
-  ARGS="$ARGS --bash=\"$BASHARGS\""
+  ARGS="$ARGS --bash=\"$BASHARGS\" --log=$LOGFILE"
   if [[ $TERM ]] ; then
     true
     # do nothing... this should be handled better but !$TERM seems to always be false so we never get colors

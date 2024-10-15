@@ -13,10 +13,9 @@ import csv
 import pathlib
 # network checking
 import socket
-# disk stuff - moved down to a try block near the code
-#import psutil
 
-# probably only for development, strip later when all the pprint debug calls are gone
+
+# For development testing, remove later when all the pprint debug calls are gone
 from pprint import pprint
 
 ### COMMAND LINE ARGUMENT HANDLING
@@ -24,15 +23,20 @@ parser = argparse.ArgumentParser(
     description="stuff"
 )
 parser.add_argument('-b', '--bash', required=True, type=str)
+parser.add_argument('-r', '--report', action='store_true') # this is just to 'catch' a bash-side parameter, we don't use it
 parser.add_argument('-d', '--debug', action='store_true')
+parser.add_argument('-v', '--verbose', action='count', default=0)
 parser.add_argument('-l', '--log', type=str, required=False, default='/var/log/azure/'+os.path.basename(__file__)+'.log')
 parser.add_argument('-t', '--noterm', action='store_true') # mainly used for coloring output
 args=parser.parse_args()
+# TODO: implement using verbosity level
+if ( args.debug ):
+  if ( args.verbose == 0 ):
+    args.verbose = 1
 
 # example bash value:
-# bash='DISTRO=redhat|SERVICE=waagent.service|SRVSTAT=active|SRVRC=0|UNIT=active|UNITPKG=WALinuxAgent-2.7.0.6-8.el8_8.noarch|REPO=rhui-rhel-8-for-x86_64-appstream-rhui-rpms|PY=/usr/libexec/platform-python3.6|PYVERS=3.6.8|PYPKG=platform-python-3.6.8-51.el8.x86_64|PYREPO=rhui-rhel-8-for-x86_64-baseos-rhui-rpms|PYCOUNT=1|PYREQ=loaded|PYALA=loaded|WIRE=200|WIREEXTPORT=open|IMDS=200|EXTN=true|AUTOUP=true|FULLFS=/:16'
+# bash="DISTRO=debian|SERVICE=walinuxagent.service|UNIT=active|PY=/usr/bin/python3.8|PYCOUNT=1|PYREQ=loaded|PYALA=loaded"
 bashArgs = dict(inStr.split('=') for inStr in args.bash.split("|"))
-# pprint(parser.parse_args())
 # any value can be extracted with 
 #   bashArgs.get('NAME', "DefaultString")
 #  ex:
@@ -43,7 +47,7 @@ bashArgs = dict(inStr.split('=') for inStr in args.bash.split("|"))
 logger = logging.getLogger(__name__)
 logging.basicConfig(format='%(asctime)s %(message)s', filename=args.log, level=logging.DEBUG)
 # add the 'to the console' flag to the logger
-if ( args.debug ):
+if ( args.verbose > 0 ):
   logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
   logger.info("Debug on")
 #### END UTIL VARS
@@ -61,6 +65,11 @@ def cGreen(strIn): return colorPrint("\033[92m", strIn)
 def cYellow(strIn): return colorPrint("\033[93m", strIn)
 def cBlack(strIn): return colorPrint("\033[98m", strIn)
 def colorString(strIn, redVal="dead", greenVal="active", yellowVal="inactive"):
+  # force these into strs
+  strIn = str(strIn)
+  redVal = str(redVal)
+  greenVal = str(greenVal)
+  yellowVal = str(yellowVal)
   # ordered so that errors come first, then warnings and eventually "I guess it's OK"
   if redVal.lower() in strIn.lower():
     return cRed(strIn)
@@ -141,15 +150,18 @@ def validateBin(binPathIn):
       rpm=subprocess.check_output("rpm -q --whatprovides " + binPath, shell=True, stderr=subprocess.DEVNULL).decode().strip()
       thisBin["pkg"]=rpm
       try:
-        # expand on this to make the call to 'dnf' do yum on old things, for old RH flavors, maybe
-        dnfOut=subprocess.check_output("dnf info " + rpm, shell=True, stderr=subprocess.DEVNULL).decode().strip()
+        # expand on this to make the call to 'dnf'
+        #dnfOut=subprocess.check_output("dnf info " + rpm, shell=True, stderr=subprocess.DEVNULL).decode().strip()
+        result=subprocess.run(["dnf","info",rpm], stdout=subprocess.PIPE, stderr=subprocess.PIPE,check=True)
+      except subprocess.CalledProcessError as e:
+        # we didn't get a match, probably a manual install (rpm), built from source, or a general DNF failure
+        thisBin["repo"]=f"repo search failed: {e.stderr.decode()}"
+      else:
+        dnfOut=result.stdout.decode().strip()
         # Repo line should look like "From repo   : [reponame]" so clean it up
         thisBin["repo"]=re.search("From repo.*",dnfOut).group().strip().split(":")[1].strip()
-      except:
-        # we didn't get a match, probably a manual install (rpm) or from source
-        thisBin["repo"]="not from a repo"
     except subprocess.CalledProcessError as e:
-      thisBin["pkg"]="no file or owning pkg: " + e
+      thisBin["pkg"]=f"no file or owning pkg: {e.output}"
       thisBin["repo"]="n/a"
   elif ( osrID == "suse"):
     try:
@@ -310,7 +322,7 @@ checkService(waaServiceIn, package=True)
 validateBin(pythonIn)
 # PoC for right now to show what we can do, also because changing SSL can cause problems for some extensions
 validateBin("/usr/bin/openssl")
-validateBin("/sbin/waagent") # just to create another easy-to-check test
+validateBin(waaBin) # just to create another easy-to-check test
 # Don't worry about SSHD initially until we get to more 'best practice' checks
 #checkService("sshd.service", package=True)
 
@@ -325,16 +337,16 @@ for binName in bins:
                                   }
   # check for alarms in the binaries and create findings as needed
   # - is the path include questionable areas - local, home, opt - these aren't "normal"
-  if ( re.search(r"local", bins[binName]['exe']) or 
-       re.search(r"opt", bins[binName]['exe']) or
-       re.search(r"home", bins[binName]['exe'])):
+  if ( re.search("local", bins[binName]['exe']) or 
+       re.search("opt", bins[binName]['exe']) or
+       re.search("home", bins[binName]['exe'])):
     # this is bad, create a findings from this check
     findings[f"bp:{bins[binName]['exe']}"]={
       'description': f"binpath:{bins[binName]['exe']}",
       'status': "Path includes questionable directories",
       'type': "bin"
     }
-    logger.warn(f"Checking path of {bins[binName]['exe']} found in a non-standard location")
+    logger.warning(f"Checking path of {bins[binName]['exe']} found in a non-standard location")
     binReportString+=f"{cYellow(bins[binName]['exe'])} => check location\n"
   # - is the repository uncommon
   repoBad=False
@@ -343,11 +355,14 @@ for binName in bins:
     if ( not re.search(r"Origin: Ubuntu", bins[binName]['repo'])):
       repoBad=True
   elif ( osrID == "fedora" or osrID == "azurelinux" ) : 
-    # check if the repository is either @System (initial install for RHEL or AL) or includes 'rhui' or 'azurelinux'
-    if ( not (re.search(r"@System", bins[binName]['repo']) or 
-              re.search(r"anaconda", bins[binName]['repo']) or
-              re.search(r"rhui", bins[binName]['repo']) or
-              re.search(r"azurelinux", bins[binName]['repo'])
+    # Check if the 'repo' field includes the error indicator 'fail', or check if 
+    # the repository name is either @System or anaconda (initial install for RHEL or AL), or includes 'rhui' or 'azurelinux'
+    if ( re.search("fail", bins[binName]['repo']) 
+         or not (re.search(r"@System", bins[binName]['repo']) or
+                 re.search("anaconda", bins[binName]['repo']) or
+                 re.search("rhui", bins[binName]['repo']) or
+                 re.search("AppStream", bins[binName]['repo']) or
+                 re.search("azurelinux", bins[binName]['repo'])
              )):
       repoBad=True
   elif osrID == "suse":
@@ -361,28 +376,28 @@ for binName in bins:
       'status': f"Binary came from unusual source: {bins[binName]['repo']}",
       'type': "bin"
     }
-    logger.warn(f"Checking {bins[binName]['exe']} found sourced from the repo {bins[binName]['repo']}")
+    logger.warning(f"Checking {bins[binName]['exe']} found sourced from the repo {bins[binName]['repo']}")
     binReportString+=f"{bins[binName]['exe']} => {cRed(bins[binName]['repo'])} - verify repository\n"
 if (len(binReportString) == 0 ):
   binReportString=cGreen("No issues with checked binaries")
 ### Services/Units
 svcReportString=""
 for svcName in services:
-  if ( not re.search(r"running", services[svcName]['status']) ):
+  if ( not re.search("running", services[svcName]['status']) ):
     findings[f"ss:{services[svcName]['svc']}"]={
       'description': f"service:{services[svcName]['svc']}",
       'status': f"Service not in 'running' state: {services[svcName]['status']}",
       'type': "svc"
     }
-    logger.warn(f"Checking {services[svcName]['svc']} found in state {services[svcName]['status']}")
+    logger.warning(f"Checking {services[svcName]['svc']} found in state {services[svcName]['status']}")
     svcReportString+=f"{services[svcName]['svc']} => {cRed(services[svcName]['status'])} - check logs\n"
-  if ( not re.search(r"enabled", services[svcName]['config']) ):
+  if ( not re.search("enabled", services[svcName]['config']) ):
     findings[f"sc:{services[svcName]['svc']}"]={
       'description': f"service:{services[svcName]['svc']}",
       'status': f"Service not enabled: {services[svcName]['config']}",
       'type': "svc"
     }
-    logger.warn(f"Checking {services[svcName]['svc']} not enabled: {services[svcName]['config']}")
+    logger.warning(f"Checking {services[svcName]['svc']} not enabled: {services[svcName]['config']}")
     svcReportString+=f"{services[svcName]['svc']} => {cRed(services[svcName]['config'])} - check config\n"
 if (len(svcReportString) == 0 ):
   svcReportString=cGreen("No issues with checked services")
@@ -521,6 +536,26 @@ for m in mounts:
 print("------ vmassist.py results ------")
 print("Please see https://github.com/pagienge/VMassist/blob/main/docs/tux.md for information about any issues in the above output")
 print(f"OS family        : {osrID}")
+# things we will always report on:
+## WAA service
+### => services[waaServiceIn]
+#rint(f"OS family        : {osrID}")
+print(f"Agent service    : {services[waaServiceIn]['svc']}")
+print(f"=> status        : {colorString(services[waaServiceIn]['status'])}")
+print(f"=> config state  : {colorString(services[waaServiceIn]['config'], redVal='disabled', greenVal='enabled')}")
+print(f"=> source pkg    : {services[waaServiceIn]['pkg']}")
+print(f"=> repository    : {services[waaServiceIn]['repo']}")
+#checkService(waaServiceIn, package=True)
+# => {'walinuxagent.service': {'svc': 'walinuxagent.service', 'status': 'active(running)', 'config': 'enabled', 'path': '/usr/lib/systemd/system/walinuxagent.service', 'pkg': 'walinuxagent', 'repo': 'Origin: Ubuntu'}}
+print(f"Wire Server")
+print(f"  port 80        : {colorString(checks['wire']['value'], redVal='404', yellowVal='timeout', greenVal='200')}")
+print(f"  extensions     : {colorString(checks['wireExt']['value'], redVal='false', greenVal='true')}")
+print(f"IMDS             : {colorString(checks['imds']['value'], redVal='404', yellowVal='timeout', greenVal='200')}")
+
+#thisCheck={"check":"wire 80", "value":wireCheck}
+#thisCheck={"check":"imds 443", "value":imdsCheck}
+#thisCheck={"check":"wire 23526", "value":wireExt}
+
 if 'none' in checks["fullFS"]:
   print(f"Disk util > {fullPercent}%  : {checks['fullFS']['none']}")
 else:
