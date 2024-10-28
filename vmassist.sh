@@ -585,7 +585,7 @@ if [[ $DEBUG ]] || [[ $BASHREPORT ]] || [[ $PYSTAT -gt 0 ]] ; then
   echo -e "AutoUpgrade:     "$(printColorCondition $AUTOUP "$AUTOUPMSG" "true")
   # System checks
   echo -e "Volumes >$FSFULLPCENT%:   "$(printColorCondition "$FULLFS" "$FULLFS" "none")
-  echo -e "Please see https://github.com/pagienge/VMassist/blob/main/docs/tux.md for information about any issues in the above output"
+  echo -e "Please see https://aka.ms/vmassistlinux for information about any issues in the above output"
 fi
 
 # refactoring this JSON posting to be minimal, for instances when python is unworkable, a short-circuit if you will

@@ -551,7 +551,7 @@ for m in mounts:
 
 # START OUTPUT
 print("------ vmassist.py results ------")
-print("Please see https://github.com/pagienge/VMassist/blob/main/docs/tux.md for information about any issues in the above output")
+print("Please see https://aka.ms/vmassistlinux for information about any issues in the above output")
 print(f"OS family        : {osrID}")
 # things we will always report on:
 ## WAA service
