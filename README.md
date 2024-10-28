@@ -11,25 +11,28 @@ There are two components of the script
 - A python script which will perform some of the same checks as the bash script, but also will do more complex checks and reporting.
 
 ## Usage
+The vmassist scripts must be run as root.  Either enter a root shell using a command such as `sudo -i` or prepend `sudo` to each command listed in this readme.  Downloads can be run as any user however the "bootstrap" script runs the script and as such requires root permissions.
+
 ### automatic download and run
-- run `bash <(curl -sL https://raw.githubusercontent.com/pagienge/walinuxagenthealth/main/bootstrap-vmassist.sh)`
+- run\
+   `bash <(curl -sL https://raw.githubusercontent.com/pagienge/walinuxagenthealth/main/bootstrap-vmassist.sh)`
 
 ### manual download
 - download the two scripts individually to the current directory\
-   `wget https://github.com/pagienge/VMassist/raw/main/VMassist.sh`\
-   `wget https://github.com/pagienge/VMassist/raw/main/VMassist.py`
+   `wget https://github.com/pagienge/VMassist/raw/main/vmassist.sh`\
+   `wget https://github.com/pagienge/VMassist/raw/main/vmassist.py`
 
 - add executable permissions\
-`chmod VMassist.sh`
+`chmod vmassist.sh`
 - Run the script\
-`./VMassist.sh`
+`./vmassist.sh`
 
 ### Running VMassist
-- Running `bootstrap-VMassist.sh` as above will download and run the diagnostic script from `/tmp/VMassist`
+- Running `bootstrap-vmassist.sh` as above will download and run the diagnostic script from `/tmp/vmassist`
 - After downloading by any method, run the `vmassist.sh` from the path reported in the output of `bootstrap-vmassist.sh` as root, or through sudo.  The script can be run as many times as necessary without downloading again
 
 ### syntax
-Syntax: VMassist.sh [-h|v|b]
+Syntax: vmassist.sh [-h|v|b]
 - options:
    -h     Print this Help.
    -v     Verbose output mode.  May be issued up to 3 times for more verbosity (not completely implemented)
@@ -46,3 +49,5 @@ There are conditions where the scripts may not produce output at all and seem to
 - dnf repolist
 - zypper ref
 - apt-get update
+
+Once any prompts or issues with the package managers are cleared, re-run the script with `vmassist.sh`

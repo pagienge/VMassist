@@ -51,7 +51,7 @@ if [ "$CONTINUE" = 'y' -o "$CONTINUE" = 'Y' ] ; then
     echo "Creating $DLPATH"
     mkdir $DLPATH
   else
-    # since the download dir exists, lets clear out any old copies of the scripts
+    # since the download dir exists, lets clear out any potentially existent old copies of the scripts
     rm -v $DLPATH/vmassist.sh
     rm -v $DLPATH/vmassist.py
   fi

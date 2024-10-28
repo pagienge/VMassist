@@ -329,8 +329,13 @@ waaBin=subprocess.check_output("which waagent", shell=True, stderr=subprocess.DE
 logger.info(f"using waagent location {waaBin}")
 
 # Check services and binaries
-
 checkService(waaServiceIn, package=True)
+# Check SSHD, but for some reason Debian based distros name it differently
+if osrID == "debian":
+  checkService("ssh.service", package=True)
+else:
+  checkService("sshd.service", package=True)
+
 validateBin(pythonIn)
 # PoC for right now to show what we can do, also because changing SSL can cause problems for some extensions
 validateBin("/usr/bin/openssl")
