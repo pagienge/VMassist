@@ -296,10 +296,11 @@ def checkHTTPURL(urlIn):
   return returnString
 def isOpen(ip, port):
   # return true/false if the remote port is/isn't listening, only takes an IP, no DNS is done
+  # using connect_ex would give us the error code for analysis, but we're just going for true/false here
   s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
   s.settimeout(2)
   try:
-    is_open = s.connect_ex((ip, int(port))) == 0 # True if open, False if not
+    is_open = s.connect((ip, int(port))) == 0 # True if open, False if not
     if is_open:
       s.shutdown(socket.SHUT_RDWR)
     return True
