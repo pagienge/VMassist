@@ -67,7 +67,7 @@ while getopts ":hvr" option; do
         echo "help would go here"
         exit;;
       v) # turn on verbose mode
-        DEBUG=$(($DEBUG+1))
+        DEBUG=$((DEBUG+1))
         ;;
       r)
         BASHREPORT=1
@@ -282,7 +282,7 @@ if [[ $UNITFILE ]]; then
       # this shouldn't be a valid codepath since examining waagent didn't lead a python path
       # but you CAN get here if the service is masked
       loggy "High probability of a masked agent"
-      PYSTAT=$PYSTAT+8
+      PYSTAT=$((PYSTAT+8))
     else
       # go search the waagent executable (which is a script) for the python package it will call
       # the first line of the waagent "binary" will be the path to whatever python it uses
@@ -381,30 +381,37 @@ loggy "Package from repository:$PYREPO"
 # - modules
 #   We have *a* python version, as defined in the scripts, so verify if a couple of modules can be imp'd
 # 'requests'
-loggy "Checking to see if this python can load the modules we require"
-PYREQ=""
-if testPyMod $PYPATH "requests" ; then
-  PYREQ="loaded"
+if [ $(($PYSTAT & 8 )) -gt 0 ] ; then # this is for "waagent unit probably masked"
+  loggy "Skipping all python module tests due to bad agent status"
+  PYREQ="skipped"
+  PYALA="skipped"
+  PYARG="skipped"
 else
-  PYREQ="failed"
-  PYSTAT=$(($PYSTAT+1)) # if we can't load 'requests' then a lot of things are going to break - also this may be an illegitimate python
+  loggy "Checking to see if this python can load the modules we require"
+  PYREQ=""
+  if testPyMod $PYPATH "requests" ; then
+    PYREQ="loaded"
+  else
+    PYREQ="failed"
+    PYSTAT=$((PYSTAT+1)) # if we can't load 'requests' then a lot of things are going to break - also this may be an illegitimate python
+  fi
+  # 'azurelinuxagent.agent'
+  PYALA=""
+  if  testPyMod $PYPATH  "azurelinuxagent.agent" ; then
+    PYALA="loaded"
+  else
+    PYALA="failed"
+    PYSTAT=$((PYSTAT+2)) # if we can't load the agent module then either waagent will fail entirely, or this could be an illegitimate python
+  fi
+  # argparse - https://docs.python.org/3/library/argparse.html
+  if  testPyMod $PYPATH  "argparse" ; then
+    PYARG="loaded"
+  else
+    PYARG="failed"
+    PYSTAT=$((PYSTAT+4)) # if we can't load argparse then we won't be able to spawn the subscript successfully - maybe python is <3.2
+  fi
+  loggy "finished checking python modules"
 fi
-# 'azurelinuxagent.agent'
-PYALA=""
-if  testPyMod $PYPATH  "azurelinuxagent.agent" ; then
-  PYALA="loaded"
-else
-  PYALA="failed"
-  PYSTAT=$(($PYSTAT+2)) # if we can't load the agent module then either waagent will fail entirely, or this could be an illegitimate python
-fi
-# argparse - https://docs.python.org/3/library/argparse.html
-if  testPyMod $PYPATH  "argparse" ; then
-  PYARG="loaded"
-else
-  PYARG="failed"
-  PYSTAT=$(($PYSTAT+4)) # if we can't load argparse then we won't be able to spawn the subscript successfully - maybe python is <3.2
-fi
-loggy "finished checking python modules"
 # How many pythons (not snakes) are in the 'path'
 #  We're just going to count it and log, anything other than 1 is cause for caution, but not necessarily enough to error out
 loggy "Counting pythons in /usr/bin"
@@ -592,13 +599,18 @@ fi
 #  in all other situations this base code will spawn a python script to take t/s further and post a more complete log to the AI workspace
 
 ### This is where we diverge into the python sub-script.  Many checks can be moved into Python code once we have validated that the python 
-# environment isn't in a troubled state
+# if $PYSTAT > 0, environment is in a troubled state
 if [ $PYSTAT -gt 0 ]; then
   # python is inconsistent, lets throw an error here and put out our basic summaries at this point.
   # this is where all the 'old' final output will go once the py script is implented
   loggy "Python checks failed quick-exiting with python status $PYSTAT"
   # Output the logging now, since the python execution will be skipped
-  echo "Something about the python waagent wants to call ($PY) is broken: See if it exists, is part of the distro, or if there was a critical error with waagent.  PYSTAT=$PYSTAT"
+  if [ $(($PYSTAT & 8 )) -gt 0 ] ; then # this is for "waagent unit probably masked"
+    echo "Appears the waagent service definition is not valid, possibly masked- exiting now"
+  else
+    echo "Something about the python waagent wants to call ($PY) is broken: See if it exists, is part of the distro, or if there was a critical error with waagent.  PYSTAT=$PYSTAT"
+  fi
+  loggy "Skipping python script due to PYSTAT value:$PYSTAT"
 else
   # We'll go call the python sub-script here, since we should be
   #  able to at least 'function' in portable py code
@@ -644,7 +656,7 @@ else
       echo "running # $PYSCRIPT $ARGS"
 #    fi
     $PY $PYSCRIPT $ARGS
-    loggy "vmssist.py exited"
+    loggy "$PYSCRIPT exited"
   else
     loggy "vmassist.py script not found at $PYSCRIPT!! Unable to spawn"
   fi

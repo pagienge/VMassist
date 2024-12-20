@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+# TODO: validate chmod
+# TODO: /dev/null rm errors
+
 CONTINUE='no eula'
 DLPATH="/tmp/vmassist"
 

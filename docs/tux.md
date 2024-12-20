@@ -51,9 +51,6 @@ Calling versions of python not properly integrated with the rest of the operatin
 - If either module fails to load, the agent will not function properly, as the `azurelinuxagent` module is the actual agent class and `requests` is used for I/O operations with the wire server and IMDS
 - In a truly custom python3 build it is possible that even base modules are not present, which places the burden back on the systems administrator to fix any issues.
 
-Internal TSGs:
-https://supportability.visualstudio.com/AzureIaaSVM/_wiki/wikis/AzureIaaSVM/910884/WALinuxAgent-ModuleNotFoundError-NameError_AGEX
-
 ### OpenSSL
 Generally speaking, openssl does not apply to the starting of the Azure Agent, or communication to either the wireserver or IMDS, however openssl issues can cause problems with anything else that communicates to an SSL website. SSL communications include, but is not limited to 
 - Azure platform API endpoints

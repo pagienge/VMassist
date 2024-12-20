@@ -25,6 +25,7 @@ import csv
 import pathlib
 # network checking
 import socket
+import json
 
 
 # For development testing, remove later when all the pprint debug calls are gone
@@ -58,6 +59,8 @@ bashArgs = dict(inStr.split('=') for inStr in args.bash.split("|"))
 #### UTIL VARs and OBJs
 logger = logging.getLogger(__name__)
 logging.basicConfig(format='%(asctime)s %(message)s', filename=args.log, level=logging.DEBUG)
+# start logging as soon as possible
+logger.info("Python script started:"+os.path.basename(__file__))
 # add the 'to the console' flag to the logger
 if ( args.verbose > 0 ):
   logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
@@ -97,14 +100,23 @@ def colorString(strIn, redVal="dead", greenVal="active", yellowVal="inactive"):
 ### MAIN CODE
 #### Global vars setup
 fullPercent=90
-# debug var
-fullPercent=20
+# debug percentage
+if ( args.verbose > 0 ):
+  fullPercent=20
 # parse out os-release and put the values into a dict
+
 path = pathlib.Path("/etc/os-release")
 with open(path) as stream:
   reader = csv.reader(filter(lambda line: line.strip(), stream), delimiter="=")
   os_release = dict(reader)
 osrID=os_release.get("ID_LIKE", os_release.get("ID"))
+osMajS,osMinS=os_release.get("VERSION_ID").split(".")
+osMaj=int(osMajS)
+osMin=int(osMinS)
+
+# TODO: Add a family / major version check for 'supported' and "doesn't work" checks
+# TODO: perhaps add a best-effort flag, wrap things that might not work in 'best effort' mode
+# -- weird versions - OEL, Alma, Rocky
 
 # holding dicts for all the different things we will valiate
 bins={}
@@ -308,6 +320,79 @@ def isOpen(ip, port):
     is_open = False
   s.close()
   return is_open
+
+def getInterfaces():
+  # Get all interfaces present in the system except for loopback, return as a dict
+  # -- May have an issue with multiple VIPs on a NIC
+  ipOut = subprocess.run(['ip', '-j', 'address', 'show'], stdout=subprocess.PIPE)
+  intJSON = json.loads(ipOut.stdout.decode('utf-8'))
+  
+  addresses = {}
+  for iface in intJSON:
+    iface_name = iface.get('ifname')
+    if iface_name != "lo":
+      addresses[iface_name] = {}
+      addresses[iface_name]['mac'] = iface.get('address')
+      for addr_info in iface.get('addr_info', []):
+        if addr_info.get('family') == 'inet':  # Only IPv4 addresses
+          addresses[iface_name]['ip'] = addr_info.get('local')
+  return addresses
+# TODO:: repackage this search function as a generic re: search, and call it with the defined re for MAC addresses
+def searchDirForMAC(dirToSearch, returnDict, okMAC):
+  # return all MACs found defined in some config file in the passed in directory
+  #   We'll add each file, and the MAC(s) found in there, to the passed in dict
+  # accept an 'ok' MAC definition, because it would be ok for cloud-init managed
+  #   configs to have a mac defined - CI will reset the configs if the mac changes
+  # Define a MAC address regex pattern (e.g., 00:1A:2B:3C:4D:5E or 00-1A-2B-3C-4D-5E)
+  mac_pattern = re.compile(r'([0-9a-f]{2}(?::[0-9a-f]{2}){5})', re.IGNORECASE)
+  # Walk through all files in the directory
+  for root, _, files in os.walk(dirToSearch):
+    # loop through all files in the dirToSearch
+    for file_name in files:
+      file_path = os.path.join(root, file_name)
+      # Check if it's a regular file (skip links, sockets, pipes, etc.)
+      if os.path.isfile(file_path):
+        try:
+          with open(file_path, 'r') as file:
+            content = file.read()
+            # Find all MAC addresses in the file
+            mac_addresses = mac_pattern.findall(content)
+            # If MAC addresses are found, and not the passed in okMAC, add them to the dictionary
+            # mac_addresses as returned from findall will be an array of string(s)
+            if ( mac_addresses and (okMAC not in mac_addresses) ):
+              returnDict[file_path] = mac_addresses
+        except (UnicodeDecodeError, PermissionError):
+          # Skip files that can't be read due to encoding or permission issues
+          # just create the exception code block, but we won't be using it
+          pass
+              
+def searchDirForString(dirToSearch, returnDict, string):
+  for root, _, files in os.walk(dirToSearch):
+    # loop through all files in the dirToSearch
+    for file_name in files:
+      file_path = os.path.join(root, file_name)
+      # Check if it's a regular file (skip links, sockets, pipes, etc.)
+      if os.path.isfile(file_path):
+        try:
+          # Create a holding space for any/all matched text
+          defLines=""
+          # Open this file and search for the string
+          with open(file_path, 'r') as file:
+            for line_number, line in enumerate(file, start=1):
+              # store the line number and line in the return string
+              if string in line:
+                # after the first occurrance add a newline every time we find a line
+                if (defLines):
+                  defLines = f"{defLines}\n"
+                defLines = f"{defLines}{line_number}: {line.strip()}"
+          # if we found anything create the file entry in the dict with all lines
+          if ( defLines ):
+            returnDict[file_path] = defLines
+        except (UnicodeDecodeError, PermissionError):
+          # Skip files that can't be read due to encoding or permission issues
+          # just create the exception code block, but we won't be using it
+          pass
+
 #### END main logic funcs
 
 #### START main processing flow
@@ -320,8 +405,11 @@ def isOpen(ip, port):
 # LOGSTRING="$LOGSTRING|PYREQ=$PYREQ"
 # LOGSTRING="$LOGSTRING|PYALA=$PYALA"
 
-logger.info("Python script started:"+os.path.basename(__file__))
 logger.info("args were "+str(parser.parse_args()))
+# log anything we've determined above 
+logger.info(f"OS family determined as {osrID}")
+logger.info(f"OS Major Version={osMaj}")
+logger.info(f"OS Minor Version={osMin}")
 
 # We'll use the 'bash' arguments from the bash wrapper to seed this script
 waaServiceIn=bashArgs.get('SERVICE', "waagent.service") # this may differ per-distro, but offer a default
@@ -329,10 +417,11 @@ pythonIn=bashArgs.get('PY', "/usr/bin/python3")
 waaBin=subprocess.check_output("which waagent", shell=True, stderr=subprocess.DEVNULL).decode().strip()
 logger.info(f"using waagent location {waaBin}")
 
+
 # Check services and binaries
 checkService(waaServiceIn, package=True)
-# Check SSHD, but for some reason Debian based distros name it differently
-if osrID == "debian":
+# Check SSHD, Debian based distros started naming it ssh and launching on connect, sometime before Ubuntu 24.04
+if ( osrID == "debian" ):
   checkService("ssh.service", package=True)
 else:
   checkService("sshd.service", package=True)
@@ -341,6 +430,36 @@ validateBin(pythonIn)
 # PoC for right now to show what we can do, also because changing SSL can cause problems for some extensions
 validateBin("/usr/bin/openssl")
 validateBin(waaBin) # just to create another easy-to-check test
+# Lets pull the version out of the 'normal' --version output string, for manual comparisons
+waaVerOut=subprocess.check_output(f"{waaBin} --version", shell=True, stderr=subprocess.DEVNULL).decode().strip().lower().split('\n')
+# if the output changes format we'll have to recode this block
+# expected output:
+#['walinuxagent-2.7.0.6 running on redhat 8.10',
+# 'python: 3.6.8',
+# 'goal state agent: 2.7.0.6']
+waaVer = "0.0.0.0"
+waaGoalVer = "0.0.0.0"
+for line in waaVerOut:
+  # process the version out of string #1 or #3 above
+  verSearch = re.search(r'\d+\.\d+\.\d+\.\d+', line)
+  if ( verSearch ):
+    if "walinuxagent" in line:
+      waaVer = verSearch.group(0)
+    elif "goal" in line:
+      waaGoalVer = verSearch.group(0)
+# log the check
+checks["waaVersion"]={
+    'description': 'Agent component versions',
+    'check': 'waaVersion',
+    'value': f"WAA:{waaVer}, Goal:{waaGoalVer}",
+    'type': 'config'
+    }
+# if the versions match, it's a 'finding' - these will only match if autoUpg is false or the package is VERY new so likely from source
+if waaVer == waaGoalVer:
+  findings['waaVers']={'description': 'Agent/Goal versions', 'status': f"Agent version and goal state match = {waaVer} - this is unlikely"}
+
+# TODO: check if the wire port is 200, grab the version from the wire and check against goal state - secondary flag for auto upgrade
+
 # Don't worry about SSHD initially until we get to more 'best practice' checks
 #checkService("sshd.service", package=True)
 
@@ -397,7 +516,7 @@ for binName in bins:
     logger.warning(f"Checking {bins[binName]['exe']} found sourced from the repo {bins[binName]['repo']}")
     binReportString+=f"{bins[binName]['exe']} => {cRed(bins[binName]['repo'])} - verify repository\n"
 if (len(binReportString) == 0 ):
-  binReportString=cGreen("No issues with checked binaries")
+  binReportString=cGreen("-- No issues with checked binaries")
 ### Services/Units
 svcReportString=""
 for svcName in services:
@@ -418,7 +537,7 @@ for svcName in services:
     logger.warning(f"Checking {services[svcName]['svc']} not enabled: {services[svcName]['config']}")
     svcReportString+=f"{services[svcName]['svc']} => {cRed(services[svcName]['config'])} - check config\n"
 if (len(svcReportString) == 0 ):
-  svcReportString=cGreen("No issues with checked services")
+  svcReportString=cGreen("-- No issues with checked services")
 
   # print(f"Analysis of unit : {services[svcName]['svc']}:")
   # print(f"  Owning pkg     : {services[svcName]['pkg']}" )
@@ -438,7 +557,7 @@ if wireCheck != 200:
     'status': wireCheck,
     'type': "conn"
   }
-# clean up, this shouldn't remove the 'checks' reference, just the temp object
+# temp variable clean up, this shouldn't remove the item  in the 'checks' dict, just the temp object
 del(thisCheck)
 ## Wire server "extension" port
 wireExt=isOpen("168.63.129.16",32526)
@@ -450,7 +569,7 @@ if not wireExt :
     'status': wireExt,
     'type': "conn"
   }
-# clean up, this shouldn't remove the 'checks' reference, just the temp object
+# temp variable clean up, this shouldn't remove the item  in the 'checks' dict, just the temp object
 del(thisCheck)
 ## IMDS
 imdsCheck=checkHTTPURL("http://169.254.169.254/metadata/instance?api-version=2021-02-01")
@@ -462,10 +581,10 @@ if imdsCheck != 200:
     'status': imdsCheck,
     'type': "conn"
   }
-# clean up, this shouldn't remove the 'checks' reference, just the temp object
+# temp variable clean up, this shouldn't remove the item  in the 'checks' dict, just the temp object
 del(thisCheck)
 
-# OS checks
+# OS/config checks
 ## Agent config
 waaConfigOut=subprocess.check_output(f"{waaBin} --show-configuration", shell=True, stderr=subprocess.DEVNULL).decode().strip().split('\n')
 waaConfig={}
@@ -546,7 +665,49 @@ for m in mounts:
 
 ## Networking
 ### TODO: static IP
-### TODO: MAC mismatch
+# Get a list of all the interfaces and addresses
+ints=(getInterfaces())
+# Since there's no reliable way to check whether eth0 is static or dhcp, look through the
+#   normal networking directories for the eth0 IP address. 
+# If we've found any files holding the IP, that's a problem
+
+### Checks for defined MAC addresses - pertinent if someone hard coded MACs in configs
+# set a dummy mac placeholder for the search
+eth0MAC="de:ad:be:ef:4a:11"
+# If eth0 was found, store the MAC for checking for defined MAC addresses in files
+if ( 'eth0' in ints ):
+  eth0MAC = ints['eth0']['mac']
+else:
+  # if the mac was not found, we're probably going to have some large issues, so be sure to log it
+  # also create a 'finding'
+  pass
+
+filesWithMACs={}
+# We can't search for /etc because certain SSL configs have "MAC looking strings", so check these two 
+#   directories, which should cover all common distros
+searchDirForMAC("/etc/sysconfig", filesWithMACs,eth0MAC)
+searchDirForMAC("/etc/netplan", filesWithMACs,eth0MAC)
+if ( filesWithMACs ):
+  checks['MACs']={"check":"MAC addresses", "value":"MACs found - see findings"}
+  fileString=""
+  for foundFile in filesWithMACs: 
+    # if the "second time through" add a ", " seperator
+    if (fileString):
+      fileString=f"{fileString}, "
+    fileString=f"{fileString}{foundFile}=>{filesWithMACs[foundFile][0]}"
+  # create the 'findings' entry
+  findings['badMAC']={'description': 'MACs found', 'status': fileString}
+else:
+  checks['MACs']={"check":"MAC addresses", "value":"No MAC addresses found in configs"}
+
+
+# Print out the dictionary of files and their MAC addresses
+print("Files and MAC addresses found:")
+for file_path, mac_addresses in filesWithMACs.items():
+    print(f"{file_path}: {mac_addresses}")
+
+# # TODO: Search for the IP of eth0 in a file in /etc, it should never exist, finding it may mean a static is configured
+# pprint(ints)
 
 # END ALL CHECKS
 
@@ -563,40 +724,52 @@ print(f"=> status        : {colorString(services[waaServiceIn]['status'])}")
 print(f"=> config state  : {colorString(services[waaServiceIn]['config'], redVal='disabled', greenVal='enabled')}")
 print(f"=> source pkg    : {services[waaServiceIn]['pkg']}")
 print(f"=> repository    : {services[waaServiceIn]['repo']}")
+print(f"Agent version from running {waaBin} --version")
+print(f"=> Main version  : {waaVer}")
+print(f"=> Goal state    : {waaGoalVer}")
+
 #checkService(waaServiceIn, package=True)
 # => {'walinuxagent.service': {'svc': 'walinuxagent.service', 'status': 'active(running)', 'config': 'enabled', 'path': '/usr/lib/systemd/system/walinuxagent.service', 'pkg': 'walinuxagent', 'repo': 'Origin: Ubuntu'}}
 print(f"Wire Server")
 print(f"  port 80        : {colorString(checks['wire']['value'], redVal='404', yellowVal='timeout', greenVal='200')}")
-print(f"  extensions     : {colorString(checks['wireExt']['value'], redVal='false', greenVal='true')}")
+print(f"  port 32526     : {colorString(checks['wireExt']['value'], redVal='false', greenVal='true')}")
 print(f"IMDS             : {colorString(checks['imds']['value'], redVal='404', yellowVal='timeout', greenVal='200')}")
 
-#thisCheck={"check":"wire 80", "value":wireCheck}
-#thisCheck={"check":"imds 443", "value":imdsCheck}
-#thisCheck={"check":"wire 23526", "value":wireExt}
-
+# Always print out something about disk, use the default 'no problems' object, otherwise show what we found
 if 'none' in checks["fullFS"]:
   print(f"Disk util > {fullPercent}%  : {checks['fullFS']['none']}")
 else:
   print(f"Disk util > {fullPercent}%  : {findings['fullFS']['status']}")
+
 # TODO: clean up and verify color on all core checks - wire server, waagent status
-# TODO: parse findings list
 # TODO: optionally output all 'checks' objects
 # Output the pre-determined binary findings
-print("Binary check results:")
+print("- Binary check results:")
 print(binReportString)
-print("Service check results:")
+print("- Service check results:")
 print(svcReportString)
-# Parse all items in bins{} and services{} and add them to checks and findings as needed
+# TODO: parse findings list
+print("- Findings from all checks:")
+if ( findings ):
+  print(cYellow("-- All Findings (may duplicate Service and Binary checks) ---"))
+  for find in findings:
+    print(f"--- {findings[find]['description']} : {findings[find]['status']}")
+  print(cYellow("-- END Findings ---"))
+else:
+  print(cGreen("-- No notable findings!"))
+
 
 ### Log the data - don't send to the console
-logger.info("Binary check data structure:")
+logger.info("--- verbose output of data structures ---")
+logger.info("----- Binary check data structure:")
 logger.info(str(bins))
-logger.info("Service checks data structure:")
+logger.info("----- Service checks data structure:")
 logger.info(str(services))
-logger.info("All \"checks\" data structure:")
+logger.info("----- All \"checks\" data structure:")
 logger.info(str(checks))
-logger.info("All \"findings\" data structure:")
+logger.info("----- All \"findings\" data structure:")
 logger.info(str(findings))
+logger.info("--- END data structures ---")
 
 # # DEBUG STUFF
 # # semi-debug, looks good for now until we get the checks and findings presentation built up
