@@ -440,8 +440,8 @@ waaVerOut=subprocess.check_output(f"{waaBin} --version", shell=True, stderr=subp
 waaVer = "0.0.0.0"
 waaGoalVer = "0.0.0.0"
 for line in waaVerOut:
-  # process the version out of string #1 or #3 above
-  verSearch = re.search(r'\d+\.\d+\.\d+\.\d+', line)
+  # process the version out of string #1 or #3 above - with an optional 4th v.v.v.v section since some versions only have 3
+  verSearch = re.search(r'\d+\.\d+\.\d+(\.\d+)?', line)
   if ( verSearch ):
     if "walinuxagent" in line:
       waaVer = verSearch.group(0)
@@ -667,6 +667,8 @@ for m in mounts:
 ### TODO: static IP
 # Get a list of all the interfaces and addresses
 ints=(getInterfaces())
+# pprint(ints)
+# TODO: Search for the IP of eth0 in a file in /etc, it should never exist, finding it may mean a static is configured
 # Since there's no reliable way to check whether eth0 is static or dhcp, look through the
 #   normal networking directories for the eth0 IP address. 
 # If we've found any files holding the IP, that's a problem
@@ -706,8 +708,7 @@ print("Files and MAC addresses found:")
 for file_path, mac_addresses in filesWithMACs.items():
     print(f"{file_path}: {mac_addresses}")
 
-# # TODO: Search for the IP of eth0 in a file in /etc, it should never exist, finding it may mean a static is configured
-# pprint(ints)
+
 
 # END ALL CHECKS
 
