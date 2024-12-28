@@ -417,6 +417,16 @@ pythonIn=bashArgs.get('PY', "/usr/bin/python3")
 waaBin=subprocess.check_output("which waagent", shell=True, stderr=subprocess.DEVNULL).decode().strip()
 logger.info(f"using waagent location {waaBin}")
 
+# TODO: look for 'proxy' variables
+osEnv=dict(os.environ)
+# look through the os.environ object for any mention of a variable with 'proxy' in the name
+proxyVars = {key: osEnv[key] for key in osEnv if "proxy" in key.lower()}
+# create a check and if needed a finding
+if proxyVars:
+  findings['proxy']={'description': 'ProxyCheck', 'status': f"Found proxy environment vars:\n{proxyVars}"}
+  checks['proxy']={"check":"proxy", "value":proxyVars}
+else:
+  checks['proxy']={"check":"proxy", "value":"None Found"}
 
 # Check services and binaries
 checkService(waaServiceIn, package=True)
@@ -701,14 +711,6 @@ if ( filesWithMACs ):
   findings['badMAC']={'description': 'MACs found', 'status': fileString}
 else:
   checks['MACs']={"check":"MAC addresses", "value":"No MAC addresses found in configs"}
-
-
-# Print out the dictionary of files and their MAC addresses
-print("Files and MAC addresses found:")
-for file_path, mac_addresses in filesWithMACs.items():
-    print(f"{file_path}: {mac_addresses}")
-
-
 
 # END ALL CHECKS
 
